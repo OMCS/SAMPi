@@ -1,0 +1,70 @@
+1. Get Pi set up with SSH, Perl libraries, etc.
+2. Test with Python to see if we get anything on the serial port or if we need to change settings
+3. Prototype in Perl to print stuff and search for what we want
+4. Get it writing to CSV
+5. Get it to run on boot
+6. Get it auto-updating
+7. Get it uploading once per day using SAMPi_UPLOAD
+8. Sort out dynamic DNS and physical labelling so we know which data is from where
+9. Sort out WiFi adapter if required
+10. Sort out a second device for deployment (cloning, any additional settings, etc.)
+11. Etc.
+
+1. Cash registers will need to output from the serial port.
+2. You will need to set register to output to a device like a printer.
+3. you will need to use correct pin-outs for data, ground etc.
+4. you will need to set correct speed of output, bits etc to match output device. usually 9600 , 0 stop bits etc. look at your serial port on a computer for this. If you keep speed down you will get less errors, you are not extracting data like videos so keep speed down.
+
+service manual for the older ER 420m machines-:
+
+information on output for the cash registers on the ER 420m
+
+from page 2-6
+up to page 3-1
+
+I would suggest setting the port for output (DEVICE) to a display or printer, this will send data that you can read upon every transaction, thus geting a realtime output.
+
+You will need to make a driver parser to read whats coming out, probably copy a typical epson TMT88 as this is a common printer and information is easily available for this printer.
+
+RS 232 is 5v, you can setup speed, data bits etc for handshake etc from instruction manual. This is done in service mode.
+
+- I consult on the RPi stuff and develop the software, Ryan does the till setup in service mode and any wiring required
+
+use 8N1
+
+sudo apt-get install python-pip
+sudo pip install pyserial
+
+python -m serial.tools.miniterm 
+
+or
+
+python -m serial.tools.miniterm --xonxoff
+
+Settings for first test:
+
+9600bps
+Software XON/XOFF Flow control
+No parity
+1 stop bit
+8 bit data length 
+Output set to Display
+
+Pi
+
+- Raspbian
+- PySerial + Miniterm
+- SSH access externally
+- VNC access internally
+- WiFi adapter working
+- Set up keys for SFTP upload
+
+Z readings will be read at the same time they are printed, and will then be put into a local CSV file with the Pi (and therefore register) ID and the date. These will then be copied to the server (offered via those web people) via SFTP each night at midnight or 3AM or similar via cron. 
+
+Discussion:
+
+SSH we should change default password
+Need some way of identifying which till is connected to which Pi - recommend labelling the Pi with the till ID
+App will need to start on boot - I can handle this
+When app starts up, needs to check a webserver to see if there is a newer version of the script available and if so then needs to download and install it and then call the restart thing.
+
