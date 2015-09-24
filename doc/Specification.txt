@@ -1,5 +1,5 @@
-1. Get Pi set up with SSH, Perl libraries, etc.
-2. Test with Python to see if we get anything on the serial port or if we need to change settings
+1. Get Pi set up with SSH, Perl and Python libraries, etc.
+2. Test with Python to see if we get anything on the serial port or if we need to change settings (probably need to change the flow control)
 3. Prototype in Perl to print stuff and search for what we want
 4. Get it writing to CSV
 5. Get it to run on boot

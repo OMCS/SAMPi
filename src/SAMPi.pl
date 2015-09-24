@@ -9,19 +9,17 @@
 
 use strict; 
 use warnings;
+use Readonly;
 
-use constant VERSION => 0.1;
+Readonly our $VERSION => 0.2;
 
 # Logging
-use constant ENABLE_LOGGING => 0; # Enable or disable logging to file
+Readonly my $ENABLE_LOGGING => 1; # Enable or disable logging to file
 my $logOpen = 0;
 my $logFile;
 
 # Serial Communications
-use Device::SerialPort; # Serial port library we will be using
-#use constant SERIAL_PORT => "/dev/ttyUSB0";
-use constant SERIAL_PORT => "/dev/cu.Bluetooth-Incoming-Port";
-use constant BPS => 9600;
+use Device::SerialPort; 
 my $serialPort;
 
 # Simple function to print logging messages
@@ -32,15 +30,16 @@ sub logMsg
     my $logMessage = shift;
     my $timestamp = localtime(time);
 
-    # Write message to file if enabled
-    if (ENABLE_LOGGING)
+    # Write message to file if logging is enabled
+    if ($ENABLE_LOGGING)
     {
         if ($logOpen == 0)
         {
             # Attempt to open the log file in append mode
+            ## no critic qw(RequireBriefOpen)
             if (open $logFile, '>>', "SAMPi.log")
             {
-                $| = 1; # Disable buffering
+                $logFile->autoflush(1); # Disable buffering
                 $logOpen = 1;
             }
 
@@ -54,58 +53,94 @@ sub logMsg
 
         if ($logOpen)
         {
-            # Write message with timestamp to STDOUT
+            # Write message with timestamp to the log file
             print $logFile "$timestamp: $logMessage\n";
         }
     }
 
     # Print the message to STDOUT in any case
     print "$timestamp: $logMessage\n";
+
+    return;
 }
 
 # This function initialises the serial port with the correct settings
 # Modify this function if you require different settings 
 sub initialiseSerialPort
 {
+    # 8N1 with software flow control by default
+    #Readonly my $SERIAL_PORT => "/dev/ttyUSB0";
+    Readonly my $SERIAL_PORT => "/dev/cu.Bluetooth-Incoming-Port";
+    Readonly my $BPS => 9600;
+    Readonly my $DATA_BITS => 8;
+    Readonly my $STOP_BITS => 1;
+    Readonly my $PARITY => "none";
+    Readonly my $HANDSHAKE => "xoff";
+
     logMsg("Initialising Serial Port...");
-    $serialPort = Device::SerialPort->new(SERIAL_PORT);
+    $serialPort = Device::SerialPort->new($SERIAL_PORT);
 
     # If there is an error initialising the serial port, print a warning and terminate
     if (!defined $serialPort)
     {
-        logMsg("Error opening serial port " . SERIAL_PORT . ": $!\n"); 
+        logMsg("Error opening serial port $SERIAL_PORT: $!\n"); 
         die;
     }
 
-    # 8N1 with software flow control
-    $serialPort->baudrate(BPS);
-    $serialPort->databits(8);
-    $serialPort->stopbits(1);
-    $serialPort->parity("none");
-    $serialPort->handshake("xoff");
+    $serialPort->baudrate($BPS);
+    $serialPort->databits($DATA_BITS);
+    $serialPort->stopbits($STOP_BITS);
+    $serialPort->parity($PARITY);
+    $serialPort->handshake($HANDSHAKE);
 
-    logMsg("Opened serial port " . SERIAL_PORT . " at " . BPS . " BPS");
+    logMsg("Opened serial port $SERIAL_PORT at $BPS" . "BPS");
+
+    return;
 }
 
+# This function reads serial data from the ECR using the connection established by initialiseSerialPort()
 sub readSerialData
 {
+    if (!$serialPort)
+    {
+        croak("Serial port has not been configured, call initialiseSerialPort() before this function");
+    }
+
+    Readonly my $DATA_SIZE_BYTES => 256;
+    Readonly my $READ_DELAY_SECONDS => 2000;
+
     while (1)
     {
-        $serialPort->read_char_time(0);     # Don't wait for each character
-        $serialPort->read_const_time(2000); # 2 seconds per unfulfilled "read" call
+        $serialPort->read_char_time(0); # Read characters as they are received
+        $serialPort->read_const_time($READ_DELAY_SECONDS); # Time to wait between read calls 
          
-        # Read up to 255 characters, may need to be adjusted
-        my ($count, $serialData) = $serialPort->read(255);
+        # Read a number of characters from the serial port
+        my ($count, $serialData) = $serialPort->read($DATA_SIZE_BYTES);
             
         if ($count > 0) 
         {
             # Print data received from ECR via serial
             print $serialData;
         }
+
+        else
+        {
+            print "$READ_DELAY_SECONDS seconds of time passed\n";
+        }
     }
+
+    return;
 }
 
-logMsg("SAMPi v" . VERSION . " Initialising...");
-initialiseSerialPort();
-readSerialData();
+# Main function
+sub main()
+{
+    logMsg("SAMPi v$VERSION Initialising...");
+    initialiseSerialPort();
+    readSerialData();
+
+    return;
+}
+
+main();
 
