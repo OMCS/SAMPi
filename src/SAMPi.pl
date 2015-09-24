@@ -13,7 +13,7 @@ use warnings;
 use constant VERSION => 0.1;
 
 # Logging
-use constant ENABLE_LOGGING => 1; # Enable or disable logging to file
+use constant ENABLE_LOGGING => 0; # Enable or disable logging to file
 my $logOpen = 0;
 my $logFile;
 
