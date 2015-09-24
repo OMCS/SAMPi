@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 #
-# SamPI - SAM4S ECR Reader and Parser (Last Modified 24/09/2015)
+# SAMPi - SAM4S ECR Reader and Parser (Last Modified 24/09/2015)
 #
 # This software runs as a daemon on a suitably configured Raspberry Pi,
 # reads from a connected SAM4S ECR via RS232, extracts various data
@@ -133,7 +133,7 @@ sub readSerialData
 }
 
 # Main function
-sub main()
+sub main
 {
     logMsg("SAMPi v$VERSION Initialising...");
     initialiseSerialPort();
