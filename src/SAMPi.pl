@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 #
-# SAMPi - SAM4S ECR Reader and Parser (Last Modified 24/09/2015)
+# SAMPi - SAM4S ECR Reader and Parser (Last Modified 25/09/2015)
 #
 # This software runs as a daemon on a suitably configured Raspberry Pi,
 # reads from a connected SAM4S ECR via RS232, extracts various data
@@ -115,9 +115,9 @@ sub readSerialData
         $serialPort->read_const_time($READ_DELAY_SECONDS); # Time to wait between read calls 
          
         # Read a number of characters from the serial port
-        my ($count, $serialData) = $serialPort->read($DATA_SIZE_BYTES);
+        my ($bytesReceived, $serialData) = $serialPort->read($DATA_SIZE_BYTES);
             
-        if ($count > 0) 
+        if ($bytesReceived > 0)
         {
             # Print data received from ECR via serial
             print $serialData;
@@ -125,7 +125,7 @@ sub readSerialData
 
         else
         {
-            print "$READ_DELAY_SECONDS seconds of time passed\n";
+            printf "%s seconds passed\n", $READ_DELAY_SECONDS / 1000;
         }
     }
 
