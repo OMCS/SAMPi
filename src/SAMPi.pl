@@ -10,8 +10,9 @@
 use strict; 
 use warnings;
 use Readonly;
+use constant::boolean;
 
-Readonly our $VERSION => 0.3;
+Readonly our $VERSION => 0.4;
 
 # Logging
 Readonly my $ENABLE_LOGGING => 1; # Enable or disable logging to file
@@ -30,7 +31,7 @@ use File::Copy; # Copy and move
 use Cwd 'abs_path'; # Get absolute path of currently executing script
 
 Readonly my $CURRENT_VERSION_PATH => abs_path($0);
-Readonly my $LATEST_VERSION_PATH => File::Spec->tmpdir() . "SAMPi.pl";
+Readonly my $LATEST_VERSION_PATH => File::Spec->tmpdir() . "/SAMPi.pl";
 my $updateAvailable = 0;
 
 # Networking
@@ -89,8 +90,7 @@ sub logMsg
 sub initialiseSerialPort
 {
     # 8N1 with software flow control by default
-    #Readonly my $SERIAL_PORT => "/dev/ttyUSB0";
-    Readonly my $SERIAL_PORT => "/dev/cu.Bluetooth-Incoming-Port";
+    Readonly my $SERIAL_PORT => "/dev/ttyUSB0";
     Readonly my $BPS => 9600;
     Readonly my $DATA_BITS => 8;
     Readonly my $STOP_BITS => 1;
@@ -118,7 +118,7 @@ sub initialiseSerialPort
     return;
 }
 
-# This utility function returns 0 (false) or 1 (true) if the current time is during business hours
+# This utility function returns TRUE (provided by constant::boolean if the current time is during business hours
 # This will affect the behaviour of the script
 sub isBusinessHours
 {
@@ -130,13 +130,13 @@ sub isBusinessHours
     # Return true if we are within business hours
     if ($currentHour < $STORE_CLOSING_HOUR_24)
     {
-        return 1;
+        return TRUE;
     }
 
     # Or false otherwise
     else
     {
-        return 0;
+        return FALSE;
     }
 }
 
@@ -162,14 +162,14 @@ sub isUpdateAvailable
     # If they differ then the donloaded version is newer
     if (compare ($CURRENT_VERSION_PATH, $LATEST_VERSION_PATH) == 1) 
     {
-        # So we return this to the caller 
-        return 1;
+        # So we report this availability to the caller 
+        return TRUE;
 	}
 
     else
     {
-        # Otherwise return zero indicating that no update was found
-        return 0;
+        # Otherwise return false indicating that no update was found
+        return FALSE;
     }
 }
 
@@ -179,10 +179,10 @@ sub updateAndReload
 {
     if ($updateAvailable)
     {
-        print "Script should update and reload now...\n";
-        print "Replacing $CURRENT_VERSION_PATH with $LATEST_VERSION_PATH\n";
-        print "Need to implement the logMsg(), copy(),exec() call in updateAndReload()\n";
-        # copy("$LATEST_VERSION_PATH", $CURRENT_VERSION_PATH); 
+        logMsg("Update found, overwriting $CURRENT_VERSION_PATH with $LATEST_VERSION_PATH");
+        copy($LATEST_VERSION_PATH, $CURRENT_VERSION_PATH);
+        logMsg("Restarting...");
+        exec $0; # Exec call replaces running script
     }
 
     else
@@ -238,9 +238,9 @@ sub readSerialData
         while (!$storeIsOpen)
         {
             # Set delay for checking if an update is available
-            Readonly my $UPDATE_CHECK_DELAY_SECONDS => 1800; 
+            Readonly my $UPDATE_CHECK_DELAY_MINUTES => 20; 
 
-            logMsg("Checking for updates every " . ($UPDATE_CHECK_DELAY_SECONDS / 60) . " minutes");
+            logMsg("Checking for updates every $UPDATE_CHECK_DELAY_MINUTES minutes");
 
             # Check if the current script and latest script on the server differ
             $updateAvailable = isUpdateAvailable();
@@ -257,7 +257,7 @@ sub readSerialData
                 logMsg("No update found, will try again later");
                 # Check if we need to exit this subloop and delay for the user configurable number of seconds between update checks
                 $storeIsOpen = isBusinessHours();
-                sleep($UPDATE_CHECK_DELAY_SECONDS);
+                sleep($UPDATE_CHECK_DELAY_MINUTES * 60);
             }
         }
     }
