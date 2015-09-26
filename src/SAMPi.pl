@@ -118,17 +118,18 @@ sub initialiseSerialPort
     return;
 }
 
-# This utility function returns TRUE (provided by constant::boolean if the current time is during business hours
-# This will affect the behaviour of the script
+# This utility function returns TRUE (provided by constant::boolean) if the current time is during business hours
+# This will affect the behaviour of the script, it will either be in data gathering mode or idle / update mode
 sub isBusinessHours
 {
+    Readonly my $STORE_OPENING_HOUR_24 => 9;
     Readonly my $STORE_CLOSING_HOUR_24 => 17;
 
     my @currentTime = localtime();
     my $currentHour = $currentTime[2];
 
     # Return true if we are within business hours
-    if ($currentHour < $STORE_CLOSING_HOUR_24)
+    if ($currentHour >= $STORE_OPENING_HOUR_24 and $currentHour <= $STORE_CLOSING_HOUR_24)
     {
         return TRUE;
     }
