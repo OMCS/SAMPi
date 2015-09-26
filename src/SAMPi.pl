@@ -2,10 +2,16 @@
 #
 # SAMPi - SAM4S ECR Reader, Parser and Logger (Last Modified 27/09/2015)
 #
-# This software runs as a daemon on a suitably configured Raspberry Pi,
+# This software runs in the background on a suitably configured Raspberry Pi,
 # reads from a connected SAM4S ECR via RS232, extracts various data
-# in CSV format and stores it in preparation for upload via SFTP or a 
-# another suitable protocol using SAMPi_UPLOAD.sh
+# in CSV format and stores it in preparation for upload via SFTP
+#
+# This software works in conjunction with the SAMPiD daemon to
+# handle uploading csv data files, removal of data older than 
+# a configurable threshold and handle other miscellaneous tasks
+#
+# SAMPi.pl can be automatically updated by uploading a newer version
+# at a configurable URL
 
 use strict; 
 use warnings;
@@ -141,7 +147,7 @@ sub isBusinessHours
     }
 }
 
-# This function checks to see if a new version is available and returns the true if this is the case
+# This function checks to see if a new version is available and returns true if this is the case
 sub isUpdateAvailable
 {   
     Readonly my $UPDATE_URL => "https://dl.dropboxusercontent.com/u/12186225/SAMPi.pl";
@@ -156,7 +162,7 @@ sub isUpdateAvailable
     if (is_error($downloadStatus)) 
     {
         logMsg("Error downloading update from $UPDATE_URL");
-        return "";
+        return FALSE;
     }
 
     # Compare the current software and the newest version
