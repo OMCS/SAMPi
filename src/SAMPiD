@@ -1,0 +1,62 @@
+#!/bin/bash
+#
+# SAMPiD - Daemon for the SAMPi ECR tool (Last Modified 27/09/2015)
+#
+# This software should be set to run on every boot and will ensure that 
+# the main Perl program which reads data via serial, logs it and prepares
+# it for upload is running. 
+#
+# This daemon also uploads collected data via SFTP and periodically deletes
+# data files older than a configurable threshold (default is 90 days)
+# as these can be assumed to be safely on the server
+#
+# It is possible that an error will cause this process to crash so it is recommended
+# that cron or a suitable scheduler attempt to run the daemon once every 10 minutes
+# or similar to allow for automatic recovery without manual intervention
+
+DAYS_TO_KEEP_DATA=90
+
+# Main function
+main() 
+{
+    # Check the number of processes named SAMPiD running, should only be this one
+    runningProcesses=$(ps aux | grep "SAMPiD" | grep -v "grep" | wc -l > /dev/null)
+
+    # If this software is already running, then exit this unnecessary copy without doing anything
+    if [[ $process -gt 0 ]]; then
+        echo "SAMPiD is already running, exiting"
+        exit 1
+    fi 
+
+    # Main loop
+    while true; do
+        # Attempt to run SAMPi.pl (in the background) in case it is not already running or has crashed
+        perl /home/pi/SAMPi/SAMPi.pl &
+
+        # Attempt to upload the currently collected data via SFTP using rsync
+        # This ensures that only the modified or new files are uploaded to the
+        # server
+        uploadData
+
+        # Finally, clean up by deleting all data files modified more than a 
+        # set number of days ago (default is 90 days)
+        removeOldData
+    done
+}
+
+# Copy every new or modified file in the ecr_data directory to the server
+uploadData()
+{
+    echo "Uploading data to server..."
+    # rsync -rut /home/pi/SAMPi/ecr_data/* username@server:/path/to/ecr_data
+}
+
+# Remove any data older than the threshold to preserve space on the device
+removeOldData()
+{
+    echo "Removing data modified more than $DAYS_TO_KEEP_DATA days ago"
+    # find /home/pi/SAMPi/ecr_data/ -mtime $DAYS_TO_KEEP_DATA -exec rm {} \;
+}
+ 
+main "$@"
+

@@ -11,40 +11,45 @@
 # a configurable threshold and handle other miscellaneous tasks
 #
 # SAMPi.pl can be automatically updated by uploading a newer version
-# at a configurable URL
+# accessible using a configurable URL
+
+# Modern Perl #
 
 use strict; 
 use warnings;
-use Readonly;
-use constant::boolean;
 
-Readonly our $VERSION => 0.4;
+# Imported Modules #
 
-# Logging
-Readonly my $ENABLE_LOGGING => 1; # Enable or disable logging to file
-my $logOpen = 0;
-my $logFile;
+use constant::boolean; # Defines TRUE and FALSE values as Perl lacks an explicit boolean type
+use Readonly; # Allows Readonly constants
+use Device::SerialPort; # Serial IO Library 
 
-# Serial Communications
-use Device::SerialPort; 
-my $serialPort;
+use Sys::RunAlone; # This ensures only one instance of this script runs concurrently
+use LWP::Simple; # Download updates
 
-# File handling
 use File::HomeDir; # Access home directory in a portable way
 use File::Spec; # Used to get portable temporary directory path
-use File::Compare; # Compare old files and most recently updated file
-use File::Copy; # Copy and move
+use File::Compare; # Compare current script and downloaded script
+use File::Copy; # Provides the copy function
+use File::Basename; # Get directory of currently executing script
 use Cwd 'abs_path'; # Get absolute path of currently executing script
+
+# Globally accessible constants and variables #
+
+Readonly our $VERSION => 0.4;
+Readonly my $ENABLE_LOGGING => 1; # Enable or disable logging to file
 
 Readonly my $CURRENT_VERSION_PATH => abs_path($0);
 Readonly my $LATEST_VERSION_PATH => File::Spec->tmpdir() . "/SAMPi.pl";
-my $updateAvailable = 0;
 
-# Networking
-use LWP::Simple; # Download updates
+my $logOpen = 0; # Flag to determine if log file has been opened
+my $logFile; # Log file descriptor, used in multiple functions
+my $serialPort; # Serial port file descriptor, as above
+my $updateAvailable = 0; # Update flag
 
-# Simple function to print logging messages
-# with a timestamp to a file and / or stdout 
+# Functions #
+
+# Simple function to print logging messages  with a timestamp to a file and / or stdout 
 sub logMsg
 {
     # Take the message passed in as the first parameter and get the current time and date
@@ -62,9 +67,9 @@ sub logMsg
             my $currentYear = $timestamp[5] + 1900; # Need to add 1900 to get the current year
             my $logFileName = "SAMPi-" . $currentMonth . "-" . $currentYear . ".log"; # Construct the filename
 
-            # Attempt to open the log file in append mode
+            # Attempt to open the log file (located in the directory of the currently running script) in append mode
             ## no critic qw(RequireBriefOpen)
-            if (open $logFile, '>>', $logFileName)
+            if (open $logFile, '>>', dirname($0) . "/" . $logFileName)
             {
                 $logFile->autoflush(1); # Disable buffering
                 $logOpen = 1;
@@ -272,7 +277,7 @@ sub readSerialData
     return;
 }
 
-# Main function
+# Main function, called at start of execution
 sub main
 {
     logMsg("SAMPi v$VERSION Initialising...");
@@ -283,4 +288,6 @@ sub main
 }
 
 main();
+
+__END__ # Required for Sys::RunAlone
 
