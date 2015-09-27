@@ -14,6 +14,9 @@
 # that cron or a suitable scheduler attempt to run the daemon once every 10 minutes
 # or similar to allow for automatic recovery without manual intervention
 
+# Send output from this command to the system logger
+exec 1> >(logger -t "SAMPiD") 2> >(logger -t "SAMPiD_ERROR")
+
 DAYS_TO_KEEP_DATA=90
 
 # Main function
@@ -24,7 +27,7 @@ main()
 
     # If this software is already running, then exit this unnecessary copy without doing anything
     if [[ $process -gt 0 ]]; then
-        echo "SAMPiD is already running, exiting"
+        echo >&2 "SAMPiD is already running, exiting"
         exit 1
     fi 
 
