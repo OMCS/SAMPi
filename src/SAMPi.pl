@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 #
-# SAMPi - SAM4S ECR Reader, Parser and Logger (Last Modified 27/09/2015)
+# SAMPi - SAM4S ECR Reader, Parser and Logger (Last Modified 28/09/2015)
 #
 # This software runs in the background on a suitably configured Raspberry Pi,
 # reads from a connected SAM4S ECR via RS232, extracts various data
@@ -22,30 +22,35 @@ use warnings;
 
 use constant::boolean; # Defines TRUE and FALSE values as Perl lacks an explicit boolean type
 use Readonly; # Allows Readonly constants
-use Device::SerialPort; # Serial IO Library 
+use Device::SerialPort; # Serial IO library 
 
+use Try::Tiny; # Sensible try and catch as found in other languages
 use Sys::RunAlone; # This ensures only one instance of this script runs concurrently
-use LWP::Simple; # Download updates
+use LWP::Simple qw(getstore is_error); # Download updates
+use Digest::SHA1 qw(sha1_base64); # SHA-1 checksum library
 
-use File::HomeDir; # Access home directory in a portable way
-use File::Spec; # Used to get portable temporary directory path
+use File::Spec qw(tmpdir); # Used to get portable temporary directory path
 use File::Compare; # Compare current script and downloaded script
+use File::Touch; # Perl implementation of the UNIX 'touch' command
 use File::Copy; # Provides the copy function
 use File::Basename; # Get directory of currently executing script
-use Cwd 'abs_path'; # Get absolute path of currently executing script
+use Cwd qw(abs_path); # Get absolute path of currently executing script
 
 # Globally accessible constants and variables #
 
 Readonly our $VERSION => 0.4;
-Readonly my $ENABLE_LOGGING => 1; # Enable or disable logging to file
+Readonly my $LOGGING_ENABLED => TRUE; # Enable or disable logging to file
+Readonly my $UPDATE_HOOK_ENABLED => TRUE; # Attempt to call the postUpdate() function once on start if TRUE
 
+Readonly my $DIRECTORY_SEPARATOR => ($^O=~/Win/) ? "\\" : "/"; # Ternary operator used for brevity
 Readonly my $CURRENT_VERSION_PATH => abs_path($0);
-Readonly my $LATEST_VERSION_PATH => File::Spec->tmpdir() . "/SAMPi.pl";
+Readonly my $LATEST_VERSION_PATH => File::Spec->tmpdir() . $DIRECTORY_SEPARATOR . "SAMPi.pl";
 
 my $logOpen = 0; # Flag to determine if log file has been opened
 my $logFile; # Log file descriptor, used in multiple functions
 my $serialPort; # Serial port file descriptor, as above
 my $updateAvailable = 0; # Update flag
+my $postUpdateExecuted; # Filename referred to in postUpdate()
 
 # Functions #
 
@@ -58,7 +63,7 @@ sub logMsg
     my $timestampStr = localtime();
 
     # Write message to file if logging is enabled
-    if ($ENABLE_LOGGING)
+    if ($LOGGING_ENABLED)
     {
         if ($logOpen == 0)
         {
@@ -69,7 +74,7 @@ sub logMsg
 
             # Attempt to open the log file (located in the directory of the currently running script) in append mode
             ## no critic qw(RequireBriefOpen)
-            if (open $logFile, '>>', dirname($0) . "/" . $logFileName)
+            if (open $logFile, '>>', dirname($0) . $DIRECTORY_SEPARATOR . $logFileName)
             {
                 $logFile->autoflush(1); # Disable buffering
                 $logOpen = 1;
@@ -194,7 +199,8 @@ sub updateAndReload
         logMsg("Update found, overwriting $CURRENT_VERSION_PATH with $LATEST_VERSION_PATH");
         copy($LATEST_VERSION_PATH, $CURRENT_VERSION_PATH);
         logMsg("Restarting...");
-        exec $0; # Exec call replaces running script
+        unlink $postUpdateExecuted; # Remove file which signifies we have run postUpdate() before
+        exec $0; # Exec call replaces the currently running process with the new version
     }
 
     else
@@ -205,8 +211,54 @@ sub updateAndReload
     return;
 }
 
+# This function is only called if the $RUN_UPDATE_HOOK constant is set to TRUE
+# It is used in cases where an operation needs to be performed once after an update
+# Such as changing a system setting on every Pi in the SAMPi network simultaneously
+sub postUpdate
+{
+    # Enter whatever code you need to execute in the $postUpdateCode variable below
+    my $postUpdateCode = "dskd";
+
+    if (!$postUpdateCode)
+    {
+        return;
+    }
+
+    # Generate checksum for requested postUpdate code, this prevents it running more than once
+    my $checksum = sha1_base64($postUpdateCode);
+    $checksum =~ s/$DIRECTORY_SEPARATOR/-/xg; # Replace anything matching the directory separator
+    $postUpdateExecuted = dirname($CURRENT_VERSION_PATH) . $DIRECTORY_SEPARATOR . $checksum . ".run";
+
+    if (not -f $postUpdateExecuted)
+    {
+        logMsg("postUpdate() call requested, executing postUpdateCode");
+
+        # String eval is not recommended but is the only way to run this code dynamically
+        ## no critic (ProhibitStringyEval)
+        my $postUpdateValid = eval $postUpdateCode;
+
+        # Detect errors and log accordingly
+        if (not defined $postUpdateValid)
+        {
+            chomp($@);
+            logMsg("Error in postUpdateCode: $@");
+        }
+
+        touch $postUpdateExecuted;
+    }
+
+    else
+    {
+        logMsg("postUpdate() called previously, ignoring. Recommend setting \$UPDATE_HOOK_ENABLED to FALSE")
+    }
+    
+    return;
+}
+
 # This function reads serial data from the ECR using the connection established by initialiseSerialPort()
-sub readSerialData
+# when running during business hours. It uses the dataToCSV() function to collect sets of data and store it
+# in CSV format for upload. If called outside of business hours it will periodically check for updates
+sub processData
 {
     if (!$serialPort)
     {
@@ -219,11 +271,13 @@ sub readSerialData
     # Main loop
     while (1)
     {
-        # Check to see if SAMPi is running during business hours
+        # Check to see if SAMPi is running during business hours and enter the appropriate loop
         my $storeIsOpen = isBusinessHours();
 
+        # Read ECR data over serial and process it during business hours
         while ($storeIsOpen)
         {
+            # Set parameters for serial I/O
             $serialPort->read_char_time(0); # Read characters as they are received
             $serialPort->read_const_time($READ_DELAY_SECONDS); # Time to wait between read calls 
          
@@ -246,7 +300,7 @@ sub readSerialData
         }
     
         # If we are out of business hours, stop reading serial data and wait until the store reopens, 
-        # checking periodically for an updated version (see SAMPi_UPDATE.sh for more info)
+        # checking periodically for an updated version of this software
         while (!$storeIsOpen)
         {
             # Set delay for checking if an update is available
@@ -267,8 +321,14 @@ sub readSerialData
             else
             {
                 logMsg("No update found, will try again later");
-                # Check if we need to exit this subloop and delay for the user configurable number of seconds between update checks
+                # Check if we need to exit this subloop and delay for the (user-configurable) number of seconds between update checks
                 $storeIsOpen = isBusinessHours();
+
+                if ($storeIsOpen)
+                {
+                    last;
+                }
+
                 sleep($UPDATE_CHECK_DELAY_MINUTES * 60);
             }
         }
@@ -277,12 +337,27 @@ sub readSerialData
     return;
 }
 
+# This function takes data gathered over the serial connection by the processData() function
+# Parses the required fields and converts them into CSV formated files suitable for uploading
+sub dataToCSV
+{
+    # TODO: Implement this function
+    
+    return;
+}
+
 # Main function, called at start of execution
 sub main
 {
     logMsg("SAMPi v$VERSION Initialising...");
+
+    if ($UPDATE_HOOK_ENABLED)
+    {
+        postUpdate();
+    }
+
     initialiseSerialPort();
-    readSerialData();
+    processData();
 
     exit;
 }

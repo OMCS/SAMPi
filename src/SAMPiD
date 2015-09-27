@@ -50,15 +50,16 @@ main()
 # Copy every new or modified file in the ecr_data directory to the server
 uploadData()
 {
-    echo "Uploading data to server..."
-    # rsync -rut /home/pi/SAMPi/ecr_data/* username@server:/path/to/ecr_data
+    echo "Uploading ECR data to server..."
+    # rsync uses the archive, update (only send modified files), preserve time and verbose flags
+    # rsync -autv /home/pi/SAMPi/ecr_data/* username@server:/path/to/ecr_data
 }
 
 # Remove any data older than the threshold to preserve space on the device
 removeOldData()
 {
-    echo "Removing data modified more than $DAYS_TO_KEEP_DATA days ago"
-    # find /home/pi/SAMPi/ecr_data/ -mtime $DAYS_TO_KEEP_DATA -exec rm {} \;
+    echo "Removing data generated more than $DAYS_TO_KEEP_DATA days ago"
+    # find /home/pi/SAMPi/ecr_data/ -mtime +$DAYS_TO_KEEP_DATA -exec rm {} \;
 }
  
 main "$@"
