@@ -59,7 +59,7 @@ uploadData()
 removeOldData()
 {
     echo "Removing data generated more than $DAYS_TO_KEEP_DATA days ago"
-    # find /home/pi/SAMPi/ecr_data/ -mtime +$DAYS_TO_KEEP_DATA -exec rm {} \;
+    find /home/pi/SAMPi/ecr_data/ -mtime +$DAYS_TO_KEEP_DATA -exec rm {} \;
 }
  
 main "$@"
