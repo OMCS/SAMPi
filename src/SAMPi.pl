@@ -3,8 +3,8 @@
 # SAMPi - SAM4S ECR data reader, parser and logger (Last Modified 29/09/2015)
 #
 # This software runs in the background on a suitably configured Raspberry Pi,
-# reads from a connected SAM4S ECR via RS232, extracts various data
-# in CSV format and stores it in preparation for upload via SFTP
+# reads from a connected SAM4S ECR via serial connection, extracts various data,
+# puts it into CSV format and stores it in preparation for upload via SFTP
 #
 # This software works in conjunction with the SAMPiD daemon to
 # handle uploading csv data files, removal of data older than 
