@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 #
-# SAMPi - SAM4S ECR Reader, Parser and Logger (Last Modified 28/09/2015)
+# SAMPi - SAM4S ECR data reader, parser and logger (Last Modified 29/09/2015)
 #
 # This software runs in the background on a suitably configured Raspberry Pi,
 # reads from a connected SAM4S ECR via RS232, extracts various data
