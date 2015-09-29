@@ -21,16 +21,16 @@ use warnings;
 # Imported Modules #
 
 use constant::boolean; # Defines TRUE and FALSE values as Perl lacks an explicit boolean type
-use Readonly; # Allows Readonly constants
-use Device::SerialPort; # Serial IO library 
+use Readonly; # Allows read-only constants
+use Carp; # Alternative warn and die functions
 
-use Try::Tiny; # Sensible try and catch as found in other languages
-use Sys::RunAlone; # This ensures only one instance of this script runs concurrently
-use LWP::Simple qw(getstore is_error); # Download updates
+use Sys::RunAlone; # This module ensures only one instance of this software runs concurrently
+use Device::SerialPort; # Serial IO library 
+use LWP::Simple qw(getstore is_error); # Used to download updates
 use Digest::SHA1 qw(sha1_base64); # SHA-1 checksum library
 
 use File::Spec qw(tmpdir); # Used to get portable temporary directory path
-use File::Compare; # Compare current script and downloaded script
+use File::Compare; # Compare currently running script and downloaded script
 use File::Touch; # Perl implementation of the UNIX 'touch' command
 use File::Copy; # Provides the copy function
 use File::Basename; # Get directory of currently executing script
@@ -40,7 +40,7 @@ use Cwd qw(abs_path); # Get absolute path of currently executing script
 
 Readonly our $VERSION => 0.4;
 Readonly my $LOGGING_ENABLED => TRUE; # Enable or disable logging to file
-Readonly my $UPDATE_HOOK_ENABLED => TRUE; # Attempt to call the postUpdate() function once on start if TRUE
+Readonly my $UPDATE_HOOK_ENABLED => FALSE; # Attempt to call the postUpdate() function once on start if TRUE
 
 Readonly my $DIRECTORY_SEPARATOR => ($^O=~/Win/) ? "\\" : "/"; # Ternary operator used for brevity
 Readonly my $CURRENT_VERSION_PATH => abs_path($0);
@@ -83,7 +83,7 @@ sub logMsg
             # Print an error if unsuccessful 
             else
             {
-                warn "Failed to open log file: $!\n";
+                carp "Failed to open log file: $!\n";
                 $logOpen = -1;
             }
         }
@@ -217,7 +217,7 @@ sub updateAndReload
 sub postUpdate
 {
     # Enter whatever code you need to execute in the $postUpdateCode variable below
-    my $postUpdateCode = "dskd";
+    my $postUpdateCode = "";
 
     if (!$postUpdateCode)
     {
@@ -321,6 +321,7 @@ sub processData
             else
             {
                 logMsg("No update found, will try again later");
+
                 # Check if we need to exit this subloop and delay for the (user-configurable) number of seconds between update checks
                 $storeIsOpen = isBusinessHours();
 
