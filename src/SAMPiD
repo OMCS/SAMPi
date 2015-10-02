@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# SAMPiD - Daemon for the SAMPi ECR tool (Last Modified 27/09/2015)
+# SAMPiD - Daemon for the SAMPi ECR tool (Last Modified 02/10/2015)
 #
 # This software should be set to run on every boot and will ensure that 
 # the main Perl program which reads data via serial, logs it and prepares
@@ -14,27 +14,41 @@
 # that cron or a suitable scheduler attempt to run the daemon once every 10 minutes
 # or similar to allow for automatic recovery without manual intervention
 
-# Send all output from this daemon to the system logger
-exec 1> >(logger -t "SAMPiD") 2> >(logger -t "SAMPiD_ERROR")
-
+# Global Variables
+ENABLE_LOGGING=1
+LOCKDIR=/tmp/SAMPiD.lock
 DAYS_TO_KEEP_DATA=90
+
+cleanup()
+{
+    # Remove the lock directory
+    if rmdir $LOCKDIR; then
+        echo "Finished"
+    else
+        echo "Failed to remove lock directory '$LOCKDIR'"
+        exit 1
+    fi
+}
 
 # Main function
 main() 
 {
-    # Check the number of processes named SAMPiD running, should only be this one
-    runningProcesses=$(ps aux | grep "SAMPiD" | grep -v "grep" | wc -l > /dev/null)
-
-    # If this software is already running, then exit this unnecessary copy without doing anything
-    if [[ $process -gt 0 ]]; then
+    # Attempt to create lock so only one instance runs concurrently (use directory because it is an atomic operation)
+    if mkdir $LOCKDIR; then
+        # Link cleanup function to exit, should run if script crashes or is quit
+        trap "cleanup" EXIT
+    else
         echo >&2 "SAMPiD is already running, exiting"
         exit 1
-    fi 
+    fi
 
     # Main loop
     while true; do
         # Attempt to run SAMPi.pl (in the background) in case it is not already running or has crashed
-        perl /home/pi/SAMPi/SAMPi.pl &
+        alreadyRunning=$(ps aux | grep -i "SAMPi.pl" | grep -v "grep" | wc -l)
+        if (($alreadyRunning == 0)); then
+            nohup $SAMPI_PATH/SAMPi.pl > /dev/null 2>&1 &
+        fi
 
         # Attempt to upload the currently collected data via SFTP using rsync
         # This ensures that only the modified or new files are uploaded to the
@@ -44,23 +58,38 @@ main()
         # Finally, clean up by deleting all data files modified more than a 
         # set number of days ago (default is 90 days)
         removeOldData
+
+        sleep 300 # Wait for 5 minutes
     done
 }
 
 # Copy every new or modified file in the ecr_data directory to the server
 uploadData()
 {
-    echo "Uploading ECR data to server..."
+    UPLOAD_PATH=$(dirname $SAMPI_PATH)/ecr_data
+    echo "Uploading ECR data from $UPLOAD_PATH to server..."
     # rsync uses the archive, update (only send modified files), preserve time and verbose flags
-    # rsync -autv /home/pi/SAMPi/ecr_data/* username@server:/path/to/ecr_data
+    # rsync -autv $UPLOAD_PATH/* username@server:/path/to/ecr_data
 }
 
 # Remove any data older than the threshold to preserve space on the device
 removeOldData()
 {
     echo "Removing data generated more than $DAYS_TO_KEEP_DATA days ago"
-    find /home/pi/SAMPi/ecr_data/ -mtime +$DAYS_TO_KEEP_DATA -exec rm {} \;
+    find $UPLOAD_PATH -mtime +$DAYS_TO_KEEP_DATA -exec rm {} \;
 }
- 
+
+# Set the correct path to SAMPi.pl depending on if we are in production or testing
+if [[ $(uname) == 'Linux' ]]; then
+    SAMPI_PATH=$HOME/SAMPi
+else
+    SAMPI_PATH=$HOME/Dropbox/Work/SAMPi/src
+fi
+
+# Send all output from this daemon to the system logger if enabled
+if [[ $ENABLE_LOGGING == 1 ]]; then 
+    exec 1> >(logger -t "SAMPiD") 2> >(logger -t "SAMPiD_ERROR")
+fi
+
 main "$@"
 
