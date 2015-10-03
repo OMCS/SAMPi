@@ -27,7 +27,7 @@ use Carp; # Provides alternative warn and die functions
 use Sys::RunAlone; # This module ensures only one instance of this software runs concurrently
 use Sys::Hostname; # Acquire hostname 
 use Device::SerialPort; # Serial IO library 
-use LWP::Simple qw(getstore is_error); # Used to download updates
+use LWP::Simple qw(getstore is_error $ua); # Used to download updates
 use Digest::SHA1 qw(sha1_base64); # SHA1 checksum library
 
 use File::Spec qw(tmpdir); # Used to get portable temporary directory path
@@ -175,7 +175,7 @@ sub isBusinessHours
     else
     {
         # Write the daily transaction count to the CSV file and then reset it
-        parsedLineToCSV("TRANSACTION_COUNT", $transactionCount); # FIXME: Wrong parameters 
+        # parsedLineToCSV("TRANSACTION_COUNT", $transactionCount); # FIXME: Wrong parameters 
         $transactionCount = 0; # Reset daily transaction count
         return FALSE;
     }
@@ -189,7 +189,8 @@ sub isUpdateAvailable
     logMsg("Checking for update...");
     logMsg("Attempting to download from update URL... ($UPDATE_URL)");
 
-    # Save the latest available version in a temporary directory
+    # Save the latest available version in a temporary directory, timeout is 30 seconds
+    $ua->timeout(30);
     my $downloadStatus = getstore($UPDATE_URL, $LATEST_VERSION_PATH);
 
     # If the download failed then write a message to the log and return without an update
@@ -409,7 +410,7 @@ sub parsedLineToCSV
     # Create an appropriately named CSV file and open it in append mode if it does not already exist
     if (!$csvFile)
     {
-        initiliaseCSVFile();
+        initialiseCSVFile();
     }
 
     my $numParameters = @_;
@@ -438,23 +439,39 @@ sub parsedLineToCSV
 
 # This function creates a CSV file in the local ecr_data directory with a list of predefined headings
 # and named with the date of creation and hostname of the machine SAMPi is running on
-sub initiliaseCSVFile
+sub initialiseCSVFile
 {
     my $hostname = hostname();
-    my $csvFilename = $hostname . $currentDate;
+    my $csvFilePath = dirname(dirname($CURRENT_VERSION_PATH)) . $DIRECTORY_SEPARATOR . "ecr_data" . $DIRECTORY_SEPARATOR . $hostname . "-" . $currentDate . ".csv";
 
-    ## no critic qw(RequireBriefOpen)
-    open($csvFile, '>>', $csvFilename) or die "Error opening CSV file: $!";
-
-    my @csvHeadings = ("Heading 1", "Heading 2", "Heading 3");
-
-    # Write the headings to the file
-    foreach (@csvHeadings)
+    # If the file does not exist, create it and add the correct headings
+    if (! -e $csvFilePath)
     {
-        print $csvFile "$_,";
+        logMsg("Creating CSV file $csvFilePath");
+
+        ## no critic qw(RequireBriefOpen)
+        open($csvFile, '>>', $csvFilePath) or die "Error opening CSV file: $!";
+
+        my @csvHeadings = ("Heading 1", "Heading 2", "Heading 3");
+
+        # Write the headings to the file
+        foreach (@csvHeadings)
+        {
+            print $csvFile "$_,";
+        }
+
+        print $csvFile "\n";
     }
 
-    print $csvFile "\n";
+    # If the file already exists, simply open it in append mode
+    else
+    {
+        logMsg("Opening existing CSV file $csvFilePath");
+        ## no critic qw(RequireBriefOpen)
+        open($csvFile, '>>', $csvFilePath) or die "Error opening CSV file: $!";
+    }
+
+    $csvFile->autoflush(1);
 
     return;
 }
