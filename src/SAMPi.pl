@@ -342,7 +342,7 @@ sub parseLine
         # Treat the TOTAL line differently to a standard transaction line
         if (index($transactionKey, "TOTAL") != -1)
         {
-            parseLineToCSV($transactionValue);
+            parsedLineToCSV($transactionValue);
             return;
         }
 
