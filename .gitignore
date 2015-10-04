@@ -21,3 +21,4 @@ nytprof.out
 *.log
 doc/Specification.txt
 *.run
+*.csv

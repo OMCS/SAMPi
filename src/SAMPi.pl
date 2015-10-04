@@ -29,6 +29,7 @@ use Sys::Hostname; # Acquire hostname
 use Device::SerialPort; # Serial IO library 
 use LWP::Simple qw(getstore is_error $ua); # Used to download updates
 use Digest::SHA1 qw(sha1_base64); # SHA1 checksum library
+use Time::HiRes qw(sleep); # Allows sleeping for less than a second
 
 use File::Spec qw(tmpdir); # Used to get portable temporary directory path
 use File::Compare; # Compare currently running script and downloaded script
@@ -46,8 +47,13 @@ Readonly my $UPDATE_HOOK_ENABLED => FALSE; # Attempt to call the postUpdate() fu
 Readonly my $DIRECTORY_SEPARATOR => ($^O=~/Win/) ? "\\" : "/"; # Ternary operator used for brevity
 Readonly my $CURRENT_VERSION_PATH => abs_path($0);
 Readonly my $LATEST_VERSION_PATH => File::Spec->tmpdir() . $DIRECTORY_SEPARATOR . "SAMPi.pl";
+Readonly my $UPDATE_CHECK_DELAY_MINUTES => 20; # Check for updates every 20 minutes in idle mode
 
-# Constants used to identify which part of the data we are currently parsing
+# Define opening and closing hours
+Readonly my $STORE_OPENING_HOUR_24 => 6;
+Readonly my $STORE_CLOSING_HOUR_24 => 23;
+
+# Constants used to identify which part of the data we are currently parsing 
 Readonly my $UNKNOWN => -1;
 Readonly my $HEADER => 0;
 Readonly my $TRANSACTION => 1;
@@ -57,18 +63,23 @@ Readonly my $Z2_REPORT => 4;
 Readonly my $Z3_REPORT => 5;
 Readonly my $X_REPORT => 6;
 
+# File IO 
 my $logOpen = 0; # Flag to determine if log file has been opened
 my $logFile; # Log file descriptor, used in multiple functions
 my $csvFile; # CSV file descriptor, used for output
 my $serialPort; # Serial port file descriptor, used for input
 
+# Updates
 my $updateAvailable = 0; # Update flag
 my $postUpdateExecuted; # Filename referred to in postUpdate()
 
+# Parser State
 my $currentDate; # Stores the current date in a string 
+my $previousEvent = $UNKNOWN; # Track the previous event, used for counting transactions
 my $currentEvent = $UNKNOWN; # Tracks the current type of data being parsed
-my $currentEventTime = 0;
-my $transactionCount = 0; # Counter for number of transactions per day
+my $currentEventTime = 0; # Store the time of the current event
+my $transactionCount = 1; # Counter for number of transactions per day
+my $reportType; # Store report type to differentiate between X and Z reports
 
 # Functions #
 
@@ -127,7 +138,7 @@ sub logMsg
 sub initialiseSerialPort
 {
     # 8N1 with software flow control by default
-    Readonly my $SERIAL_PORT => "/dev/ttyUSB0";
+    Readonly my $SERIAL_PORT => ($^O=~/Linux/) ? "/dev/ttyUSB0" : "/dev/ttys005"; # This varies depending on current OS
     Readonly my $BPS => 9600;
     Readonly my $DATA_BITS => 8;
     Readonly my $STOP_BITS => 1;
@@ -150,6 +161,10 @@ sub initialiseSerialPort
     $serialPort->parity($PARITY);
     $serialPort->handshake($HANDSHAKE);
 
+    # Set lookfor() to match EOL characters so that we can read data line by line
+    $serialPort->are_match( "\r", "\n" );
+    $serialPort->lookclear;  
+
     logMsg("Opened serial port $SERIAL_PORT at $BPS" . "BPS");
 
     return;
@@ -159,11 +174,7 @@ sub initialiseSerialPort
 # This will affect the behaviour of the script, it will either be in data gathering mode or idle / update mode
 sub isBusinessHours
 {
-    Readonly my $STORE_OPENING_HOUR_24 => 6;
-    Readonly my $STORE_CLOSING_HOUR_24 => 23;
-
-    my @currentTime = localtime();
-    my $currentHour = $currentTime[2];
+    my (undef, undef, $currentHour) = localtime();
 
     # Return true if we are within business hours
     if ($currentHour >= $STORE_OPENING_HOUR_24 and $currentHour <= $STORE_CLOSING_HOUR_24)
@@ -174,11 +185,7 @@ sub isBusinessHours
     # Or false otherwise
     else
     {
-        # Close the CSV file handle for the days' transactions
-        close $csvFile; 
-
-        # Write the daily transaction count to the CSV file and then reset it
-        # parsedLineToCSV("TRANSACTION_COUNT", $transactionCount); # FIXME: Wrong parameters 
+        close $csvFile; # Close the CSV file handle for the days' transactions
         $transactionCount = 0; # Reset daily transaction count
         return FALSE;
     }
@@ -289,24 +296,48 @@ sub postUpdate
     return;
 }
 
+sub parseHeader
+{
+
+}
+
+sub parseTransaction
+{
+
+}
+
+sub parseReport
+{
+
+}
+
 # This function is responsible for the first-stage parsing  of a line of serial data with regard to the current state of the data
 # This stage differentiates between transaction reports, z-reports and x-reports and separates events for further processing
-# Into CSV format in the parsedLineToCSV() function. It also sets a number of variables which hold state information 
-# TODO: Finish implementing this function
+# Into CSV format via the parsedLineToCSV() function.
+# TODO: Refactor into a couple of extra functions, one for transaction and one for report, finish implementing
 sub parseLine
 {
-    # The line passed in as a parameter will be accessible as $dataLine
+    # The line of data passed in as a parameter will be accessible as $dataLine
     my ($dataLine) = @_;
 
-    # Replace any 0x9c hex values returned by the serial port with a '£'
+    # Replace any 0x9c hex values returned by the serial port with a GBP currency symbol
     $dataLine =~ s/\x{9c}/£/gx;
-
-    print "Input is: $dataLine";
 
     # Handle headers
     # If the line begins with a date in dd/mm/yyyy format, it is a header
     if ($dataLine =~ /^[0-9][0-9]\/[0-9][0-9]\/[0-9][0-9][0-9][0-9]/x)
     {
+        if ($currentEvent == $TRANSACTION)
+        {
+            $previousEvent = $TRANSACTION;
+        }
+
+        else
+        {
+            $previousEvent = $UNKNOWN;
+        }
+
+        print "Header Detected\n";
         $currentEvent = $HEADER;
 
         # Extract the time from the line into the $1 variable
@@ -324,20 +355,32 @@ sub parseLine
     # Handle the first line after a header
     if ($currentEvent == $HEADER)
     {
+        # Correctly count transactions 
+        if ($previousEvent == $TRANSACTION)
+        {
+            $transactionCount++;
+        }
+
         # If the line after the header contains 'REPORT', we are reading (one of four types of) report
         if (index($dataLine, 'REPORT') != -1)
         {
+            print "Report Detected\n";
             $currentEvent = $REPORT;
-            return; # We need more context to see what type of report this is so we return
+
+            # Set report type to Z or X depending on first character on line
+            $reportType = (substr($dataLine, 0, 1) eq "Z") ? "Z" : "X"; 
+            return; # We need more context to see which report this is so we return and wait for more data
         }
 
         # Otherwise, we are reading a transaction event
-        $currentEvent = $TRANSACTION;
-        $transactionCount++; # Increment globally accessible daily transaction counter
+        elsif (index($dataLine, '£') != -1)
+        {
+            $currentEvent = $TRANSACTION;
+        }
     }
 
     # Handle a line that is part of a transaction
-    if ($currentEvent == $TRANSACTION)
+    if ($currentEvent == $TRANSACTION and index($dataLine, '£') != -1)
     {
         # Separate the data into a key (identifier preceding a price) and a value (price) to use as input for the second parser stage
         my ($transactionKey, $transactionValue) = split('£', $dataLine, 2);
@@ -345,36 +388,65 @@ sub parseLine
         # Treat the TOTAL line differently to a standard transaction line
         if (index($transactionKey, "TOTAL") != -1)
         {
-            parsedLineToCSV($transactionValue);
+            #parsedLineToCSV($transactionValue);
             return;
         }
 
-        # Pass the separated data to the second-stage parser for formatting into CSV
-        parsedLineToCSV($transactionKey, $transactionValue);
+        elsif (index($transactionKey, "CASH") != -1)
+        {
+            return;
+        }
+
+        else
+        {
+            # For regular transactions, pass the separated data to the second-stage parser for formatting into CSV
+            parsedLineToCSV($transactionKey, $transactionValue);
+            print "Transactions: $transactionCount\n";
+        }
+
         return;
     }
 
+        ## no critic qw(ProhibitCascadingIfElse)
     # Handle a line that specifies the type of report being processed
     if ($currentEvent == $REPORT)
     {
-        ## no critic qw(ProhibitCascadingIfElse)
-        if ($dataLine =~ /^FINANCIAL/x)
+        if ($reportType eq "Z")
         {
-            $currentEvent = $Z1_REPORT;
+            if ($dataLine =~ /^FINANCIAL/x)
+            {
+                $currentEvent = $Z1_REPORT;
+                print "Z1 Detected\n";
+            }
+
+            elsif ($dataLine =~ /^TIME/x)
+            {
+                $currentEvent = $Z2_REPORT;
+                print "Z2 Detected\n";
+            }
+
+            elsif ($dataLine =~ /^ALL\sPLU/x)
+            {
+                $currentEvent = $Z3_REPORT;
+                print "Z3 Detected\n";
+            }
+        }
+        
+        elsif ($dataLine =~ /^FINANCIAL/x)
+        {
+            print "X1 Detected\n";
+            $currentEvent = $X_REPORT;
         }
 
         elsif ($dataLine =~ /^TIME/x)
         {
-            $currentEvent = $Z2_REPORT;
+            print "X2 Detected\n";
+            $currentEvent = $X_REPORT;
         }
 
-        elsif ($dataLine =~ /^ALL PLU/x)
+        elsif ($dataLine =~ /^ALL\sPLU/x)
         {
-            $currentEvent = $Z3_REPORT;
-        }
-
-        elsif ($dataLine =~ /^X 1/x)
-        {
+            print "X3 Detected\n";
             $currentEvent = $X_REPORT;
         }
 
@@ -434,7 +506,7 @@ sub parsedLineToCSV
     {
         my ($transactionKey, $transactionValue) = @_;
 
-        print $csvFile "$transactionKey,£$transactionValue,";
+        print $csvFile "$transactionCount, $currentEventTime, $transactionKey, £$transactionValue\n";
     }
     
     return;
@@ -455,15 +527,24 @@ sub initialiseCSVFile
         ## no critic qw(RequireBriefOpen)
         open($csvFile, '>>', $csvFilePath) or die "Error opening CSV file: $!";
 
-        my @csvHeadings = ("Heading 1", "Heading 2", "Heading 3");
+        my @csvHeadings = ("ID", "TIME", "PLU", "PRICE");
 
         # Write the headings to the file
-        foreach (@csvHeadings)
+        for my $currentHeading (0..$#csvHeadings) 
         {
-            print $csvFile "$_,";
-        }
+            for ($csvHeadings[$currentHeading]) 
+            {
+                if ($currentHeading == $#csvHeadings)
+                {
+                    print $csvFile "$_\n";
+                }
 
-        print $csvFile "\n";
+                else
+                {
+                    print $csvFile "$_,";
+                }
+            }
+        }
     }
 
     # If the file already exists, simply open it in append mode
@@ -489,36 +570,32 @@ sub processData
         croak("Serial port has not been configured, call initialiseSerialPort() before this function");
     }
 
-    # Main loop
-    while (1)
-    {
-        # Check to see if SAMPi is running during business hours and enter the appropriate loop
-        my $storeIsOpen = isBusinessHours();
+    # Check to see if SAMPi is running during business hours which will determine active / idle mode 
+    my $storeIsOpen = isBusinessHours();
 
+    # Main loop
+    while (TRUE)
+    {
         # Read ECR data over serial and process it during business hours
         while ($storeIsOpen)
         {
-            # Set parameters for serial IO, look for EOL characters so we read in line by line
-            $serialPort->are_match( "\r", "\n" );
-         
             # Wait until we have read a line of data 
             if (my $serialDataLine = $serialPort->lookfor()) 
             {
                 # Parse the line of data
                 parseLine($serialDataLine);
             }
-            
-            # Update current hour
+
             $storeIsOpen = isBusinessHours();
+
+            # 200ms delay to save CPU cycles
+            sleep(0.2);
         }
     
         # If we are out of business hours, stop reading serial data and wait until the store reopens, 
         # checking periodically for an updated version of this software
         while (!$storeIsOpen)
         {
-            # Set delay for checking if an update is available
-            Readonly my $UPDATE_CHECK_DELAY_MINUTES => 20; 
-
             logMsg("Checking for updates every $UPDATE_CHECK_DELAY_MINUTES minutes");
 
             # Check if the current script and latest script on the server differ
@@ -534,17 +611,10 @@ sub processData
             else
             {
                 logMsg("No update found, will try again later");
-
-                # Check if we need to exit this subloop and delay for the (user-configurable) number of seconds between update checks
-                $storeIsOpen = isBusinessHours();
-
-                if ($storeIsOpen)
-                {
-                    last;
-                }
-
                 sleep($UPDATE_CHECK_DELAY_MINUTES * 60); # The parameter must be in seconds
             }
+
+            $storeIsOpen = isBusinessHours();
         }
     }
 
