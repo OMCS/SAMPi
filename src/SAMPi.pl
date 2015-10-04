@@ -53,15 +53,20 @@ Readonly my $UPDATE_CHECK_DELAY_MINUTES => 20; # Check for updates every 20 minu
 Readonly my $STORE_OPENING_HOUR_24 => 6;
 Readonly my $STORE_CLOSING_HOUR_24 => 23;
 
-# Constants used to identify which part of the data we are currently parsing 
-Readonly my $UNKNOWN => -1;
-Readonly my $HEADER => 0;
-Readonly my $TRANSACTION => 1;
-Readonly my $REPORT => 2;
-Readonly my $Z1_REPORT => 3;
-Readonly my $Z2_REPORT => 4;
-Readonly my $Z3_REPORT => 5;
-Readonly my $X_REPORT => 6;
+# Constants used to identify which part of the data we are currently parsing, in a hash to allow for dynamic access
+Readonly my %PARSER_EVENTS =>
+(
+    UNKNOWN => -1,
+    HEADER => 0,
+    TRANSACTION => 1,
+    REPORT => 2,
+    Z1_REPORT => 3,
+    Z2_REPORT => 4,
+    Z3_REPORT => 5,
+    X1_REPORT => 6,
+    X2_REPORT => 7,
+    X3_REPORT => 8
+);
 
 # File IO 
 my $logOpen = 0; # Flag to determine if log file has been opened
@@ -73,13 +78,13 @@ my $serialPort; # Serial port file descriptor, used for input
 my $updateAvailable = 0; # Update flag
 my $postUpdateExecuted; # Filename referred to in postUpdate()
 
-# Parser State
+# Parser State Variables
 my $currentDate; # Stores the current date in a string 
-my $previousEvent = $UNKNOWN; # Track the previous event, used for counting transactions
-my $currentEvent = $UNKNOWN; # Tracks the current type of data being parsed
+my $previousEvent = $PARSER_EVENTS{UNKNOWN}; # Track the previous event, used for counting transactions
+my $currentEvent = $PARSER_EVENTS{UNKNOWN}; # Tracks the current type of data being parsed
 my $currentEventTime = 0; # Store the time of the current event
 my $transactionCount = 1; # Counter for number of transactions per day
-my $reportType; # Store report type to differentiate between X and Z reports
+my $currentReportType; # Either 'Z' or 'X' when reading a report
 
 # Functions #
 
@@ -296,25 +301,170 @@ sub postUpdate
     return;
 }
 
+# This function is the third part of the first-stage parser, it processes headers
+# Each header represents a separate event (transaction or report) and includes a 
+# timestamp which is extracted and stored for later use
 sub parseHeader
 {
+    my ($headerLine) = @_;
+    
+    # Keep track of the previous event if it was a transaction
+    if ($currentEvent == $PARSER_EVENTS{TRANSACTION})
+    {
+        # This enables counting transactions
+        $previousEvent = $PARSER_EVENTS{TRANSACTION};
+    }
 
+    else
+    {
+        $previousEvent = $PARSER_EVENTS{UNKNOWN};
+    }
+
+    # Extract the event time into the $1 reserved variable
+    $headerLine =~ /([0-9][0-9]:[0-9][0-9])/x;
+
+    # Check that the extraction succeeded 
+    if ($1)
+    {
+        # Store the time for later use
+        $currentEventTime = $1; 
+    }
+
+    $currentEvent = $PARSER_EVENTS{HEADER};
+    print "HEADER AT $currentEventTime\n";
+
+    return;
 }
 
+# This function is the second part of the first-stage parser, it processes transactions
+# Each transaction is part of a group and contains the PLU and price for one or more 
+# items. These are processed as key-value pairs with consideration for lines that
+# do not represent PLUs (e.g. totals or payment method listings)
 sub parseTransaction
 {
+    my ($transactionLine) = @_;
 
+    $currentEvent = $PARSER_EVENTS{TRANSACTION};
+
+    # Separate the data into a key (PLU) and a value (price) to use as input for the second-stage parser
+    my ($transactionKey, $transactionValue) = split('£', $transactionLine, 2);
+
+    # Treat the "TOTAL" line differently to a standard transaction line
+    if (index($transactionKey, "TOTAL") != -1)
+    {
+        # TODO: Implement this
+        return;
+    }
+
+    # Same for the 'CASH' line
+    elsif (index($transactionKey, "CASH") != -1)
+    {
+        # TODO: Implement this
+        return;
+    }
+
+    else
+    {
+        # For regular transactions, pass the separated data to the second-stage parser for formatting into CSV
+        parsedLineToCSV($transactionKey, $transactionValue);
+        print "\tITEM FOR TRANSACTION $transactionCount\n";
+
+        return;
+    }
 }
 
+# This function is the third part of the first-stage parser, it processes reports
+# There are six kinds of report (Z1,Z2,Z3 or X1,X2,X3) and this function accepts
+# a parameter which determines the type of report to be processed
 sub parseReport
 {
+    my ($reportLine) = @_;
 
+    # If this is the first line of a report
+    if ($currentEvent != $PARSER_EVENTS{REPORT})
+    {
+        $currentEvent = $PARSER_EVENTS{REPORT};
+
+        # Set report type to Z or X depending on first character of line
+        $currentReportType = (substr($reportLine, 0, 1) eq 'Z') ? 'Z' : 'X'; 
+    }
+
+    if ($reportLine =~ /^FINANCIAL/x or $currentEvent == $PARSER_EVENTS{Z1_REPORT} or $currentEvent == $PARSER_EVENTS{X1_REPORT})
+    {
+        print "\t$currentReportType" . "1 REPORT\n";
+        parseKnownReport(1); # This function sets the correct currentEvent and does other processing
+        return;
+    }
+
+    elsif ($reportLine =~ /^TIME/x or $currentEvent == $PARSER_EVENTS{Z2_REPORT} or $currentEvent == $PARSER_EVENTS{X2_REPORT})
+    {
+        print "\t$currentReportType" . "2 REPORT\n";
+        parseKnownReport(2);
+        return;
+    }
+
+    elsif ($reportLine =~ /^ALL\sPLU/x or $currentEvent == $PARSER_EVENTS{Z3_REPORT} or $currentEvent == $PARSER_EVENTS{X3_REPORT})
+    {
+        print "\t$currentReportType" . "3 REPORT\n";
+        parseKnownReport(3);
+    }
+
+    return;
 }
 
-# This function is responsible for the first-stage parsing  of a line of serial data with regard to the current state of the data
+# This function assists with the general report parsing function and parses known reports
+# it also sets the currentEvent variable to keep track of the state of data processing
+sub parseKnownReport
+{
+    my ($reportNum) = @_;
+
+    # Concatenate the identifier 
+    my $reportStr = $currentReportType . $reportNum . "_REPORT";
+
+    # Use dynamic variable substitution to set the correct variable
+    # This prevents replicating the same code for X and Z reports
+    $currentEvent = $PARSER_EVENTS{$reportStr};
+
+    if ($currentEvent == $PARSER_EVENTS{Z1_REPORT})
+    {
+        print("\t\tZ1 NOT IMPLEMENTED\n");
+        return;
+    }
+
+    if ($currentEvent == $PARSER_EVENTS{Z2_REPORT})
+    {
+        print("\t\tZ2 NOT IMPLEMENTED\n");
+        return;
+    }
+
+    if ($currentEvent == $PARSER_EVENTS{Z3_REPORT})
+    {
+        print("\t\tZ3 NOT IMPLEMENTED\n");
+        return;
+    }
+
+    if ($currentEvent == $PARSER_EVENTS{X1_REPORT})
+    {
+        print("\t\tX1 NOT IMPLEMENTED\n");
+        return;
+    }
+
+    if ($currentEvent == $PARSER_EVENTS{X2_REPORT})
+    {
+        print("\t\tX2 NOT IMPLEMENTED\n");
+        return;
+    }
+
+    if ($currentEvent == $PARSER_EVENTS{X3_REPORT})
+    {
+        print("\t\tX3 NOT IMPLEMENTED\n");
+        return;
+    }
+}
+
+# This function is responsible for the first-stage parsing of a line of serial data with regard to the current state of the data
 # This stage differentiates between transaction reports, z-reports and x-reports and separates events for further processing
 # Into CSV format via the parsedLineToCSV() function.
-# TODO: Refactor into a couple of extra functions, one for transaction and one for report, finish implementing
 sub parseLine
 {
     # The line of data passed in as a parameter will be accessible as $dataLine
@@ -323,157 +473,49 @@ sub parseLine
     # Replace any 0x9c hex values returned by the serial port with a GBP currency symbol
     $dataLine =~ s/\x{9c}/£/gx;
 
-    # Handle headers
     # If the line begins with a date in dd/mm/yyyy format, it is a header
     if ($dataLine =~ /^[0-9][0-9]\/[0-9][0-9]\/[0-9][0-9][0-9][0-9]/x)
     {
-        if ($currentEvent == $TRANSACTION)
-        {
-            $previousEvent = $TRANSACTION;
-        }
-
-        else
-        {
-            $previousEvent = $UNKNOWN;
-        }
-
-        print "Header Detected\n";
-        $currentEvent = $HEADER;
-
-        # Extract the time from the line into the $1 variable
-        $dataLine =~ /([0-9][0-9]:[0-9][0-9])/x;
-
-        # Check that the extraction succeeded 
-        if ($1)
-        {
-            $currentEventTime = $1; # Store the time of the current event
-        }
-
+        parseHeader($dataLine); # This will set $currentEvent to $HEADER
         return;
     }
 
-    # Handle the first line after a header
-    if ($currentEvent == $HEADER)
+    # Process the first line after a header
+    if ($currentEvent == $PARSER_EVENTS{HEADER})
     {
-        # Correctly count transactions 
-        if ($previousEvent == $TRANSACTION)
+        # Count transactions if we have just processed one
+        if ($previousEvent == $PARSER_EVENTS{TRANSACTION})
         {
             $transactionCount++;
         }
 
-        # If the line after the header contains 'REPORT', we are reading (one of four types of) report
-        if (index($dataLine, 'REPORT') != -1)
+        # If the line after the header contains "REPORT", we are reading (one of six types of) report
+        if (index($dataLine, "REPORT") != -1)
         {
-            print "Report Detected\n";
-            $currentEvent = $REPORT;
-
-            # Set report type to Z or X depending on first character on line
-            $reportType = (substr($dataLine, 0, 1) eq "Z") ? "Z" : "X"; 
-            return; # We need more context to see which report this is so we return and wait for more data
+            parseReport($dataLine);
+            return; 
         }
 
         # Otherwise, we are reading a transaction event
         elsif (index($dataLine, '£') != -1)
         {
-            $currentEvent = $TRANSACTION;
+            parseTransaction($dataLine);
+            return;
         }
     }
 
-    # Handle a line that is part of a transaction
-    if ($currentEvent == $TRANSACTION and index($dataLine, '£') != -1)
+    # Ensure the line we are operating on matches a transaction
+    elsif ($currentEvent == $PARSER_EVENTS{TRANSACTION} and index($dataLine, '£') != -1)
     {
-        # Separate the data into a key (identifier preceding a price) and a value (price) to use as input for the second parser stage
-        my ($transactionKey, $transactionValue) = split('£', $dataLine, 2);
-
-        # Treat the TOTAL line differently to a standard transaction line
-        if (index($transactionKey, "TOTAL") != -1)
-        {
-            #parsedLineToCSV($transactionValue);
-            return;
-        }
-
-        elsif (index($transactionKey, "CASH") != -1)
-        {
-            return;
-        }
-
-        else
-        {
-            # For regular transactions, pass the separated data to the second-stage parser for formatting into CSV
-            parsedLineToCSV($transactionKey, $transactionValue);
-            print "Transactions: $transactionCount\n";
-        }
-
+        parseTransaction($dataLine);
         return;
     }
 
-        ## no critic qw(ProhibitCascadingIfElse)
-    # Handle a line that specifies the type of report being processed
-    if ($currentEvent == $REPORT)
+    elsif ($currentEvent == $PARSER_EVENTS{REPORT} or $currentEvent == $PARSER_EVENTS{Z1_REPORT})
     {
-        if ($reportType eq "Z")
-        {
-            if ($dataLine =~ /^FINANCIAL/x)
-            {
-                $currentEvent = $Z1_REPORT;
-                print "Z1 Detected\n";
-            }
-
-            elsif ($dataLine =~ /^TIME/x)
-            {
-                $currentEvent = $Z2_REPORT;
-                print "Z2 Detected\n";
-            }
-
-            elsif ($dataLine =~ /^ALL\sPLU/x)
-            {
-                $currentEvent = $Z3_REPORT;
-                print "Z3 Detected\n";
-            }
-        }
-        
-        elsif ($dataLine =~ /^FINANCIAL/x)
-        {
-            print "X1 Detected\n";
-            $currentEvent = $X_REPORT;
-        }
-
-        elsif ($dataLine =~ /^TIME/x)
-        {
-            print "X2 Detected\n";
-            $currentEvent = $X_REPORT;
-        }
-
-        elsif ($dataLine =~ /^ALL\sPLU/x)
-        {
-            print "X3 Detected\n";
-            $currentEvent = $X_REPORT;
-        }
-
+        parseReport($dataLine);
         return;
     }
-
-    if ($currentEvent == $Z1_REPORT)
-    {
-        print("Z1 Reports not yet implemented\n");
-    }
-
-    if ($currentEvent == $Z2_REPORT)
-    {
-        print("Z2 Reports not yet implemented\n");
-    }
-
-    if ($currentEvent == $Z3_REPORT)
-    {
-        print("Z3 Reports not yet implemented\n");
-    }
-
-    if ($currentEvent == $X_REPORT)
-    {
-        print("X Reports not yet implemented\n");
-    }
-
-    return;
 }
 
 # This function is the second-stage parser and accepts processed data, performs further parsing
@@ -497,7 +539,8 @@ sub parsedLineToCSV
 
         if (index($transactionKey, 'TOTAL') != -1)
         {
-            print $csvFile "Total is $transactionKey\n";
+            return;
+            #print $csvFile "Total is $transactionKey\n";
         }
     }
 
