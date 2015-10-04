@@ -174,6 +174,9 @@ sub isBusinessHours
     # Or false otherwise
     else
     {
+        # Close the CSV file handle for the days' transactions
+        close $csvFile; 
+
         # Write the daily transaction count to the CSV file and then reset it
         # parsedLineToCSV("TRANSACTION_COUNT", $transactionCount); # FIXME: Wrong parameters 
         $transactionCount = 0; # Reset daily transaction count
@@ -286,9 +289,9 @@ sub postUpdate
     return;
 }
 
-# This function is responsible for the first-stage of parsing a line of serial data with regard to the current state of the data
+# This function is responsible for the first-stage parsing  of a line of serial data with regard to the current state of the data
 # This stage differentiates between transaction reports, z-reports and x-reports and separates events for further processing
-# Into CSV format in the parsedLineToCSV() function
+# Into CSV format in the parsedLineToCSV() function. It also sets a number of variables which hold state information 
 # TODO: Finish implementing this function
 sub parseLine
 {
