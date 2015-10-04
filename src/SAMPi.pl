@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 #
-# SAMPi - SAM4S ECR data reader, parser and logger (Last Modified 03/10/2015)
+# SAMPi - SAM4S ECR data reader, parser and logger (Last Modified 04/10/2015)
 #
 # This software runs in the background on a suitably configured Raspberry Pi,
 # reads from a connected SAM4S ECR via serial connection, extracts various data,
@@ -40,7 +40,7 @@ use Cwd qw(abs_path); # Get absolute path of currently executing script
 
 # Globally accessible constants and variables #
 
-Readonly our $VERSION => 0.4;
+Readonly our $VERSION => 0.5;
 Readonly my $LOGGING_ENABLED => TRUE; # Enable or disable logging to file
 Readonly my $UPDATE_HOOK_ENABLED => FALSE; # Attempt to call the postUpdate() function once on start if TRUE
 
