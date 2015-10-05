@@ -147,7 +147,7 @@ sub logMsg
         {
             # Create a new log file each month with the month and year included in the filename
             my @currentDate = getCurrentDate(); # Returned as year, month and day
-            my $logFileName = "SAMPi-" . $currentDate[1] . "-" . $currentDate[2] . ".log"; # Construct the filename
+            my $logFileName = "SAMPi-" . $currentDate[1] . "-" . $currentDate[0] . ".log"; # Construct the filename
 
             # Attempt to open the log file (located in the directory of the currently running script) in append mode
             ## no critic qw(RequireBriefOpen)
