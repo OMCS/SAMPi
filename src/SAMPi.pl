@@ -31,19 +31,22 @@ use LWP::Simple qw(getstore is_error $ua); # Used to download updates
 use Digest::SHA1 qw(sha1_base64); # SHA1 checksum library
 use Time::HiRes qw(sleep); # Allows sleeping for less than a second
 use Tie::IxHash; # Preserve insertion order on hash
+use Text::Trim; # Remove leading and trailing whitespace
 
 use File::Spec qw(tmpdir updir); # Used to get portable directory paths
 use File::Compare; # Compare currently running script and downloaded script
 use File::Touch; # Perl implementation of the UNIX 'touch' command
 use File::Copy; # Provides the copy function
 use File::Basename; # Get directory of currently executing script
+use Scalar::Util qw(openhandle); # Test if file handle is open
 use Cwd qw(abs_path); # Get absolute path of currently executing script
 
 # Globally accessible constants and variables #
 
-Readonly our $VERSION => 0.6;
+Readonly our $VERSION => 0.7;
 Readonly my $LOGGING_ENABLED => TRUE; # Enable or disable logging to file
 Readonly my $UPDATE_HOOK_ENABLED => FALSE; # Attempt to call the postUpdate() function once on start if TRUE
+Readonly my $DEBUG_ENABLED => FALSE; # If enabled, the parser will print information as it runs
 
 Readonly my $DIRECTORY_SEPARATOR => ($^O=~/Win/) ? "\\" : "/"; # Ternary operator used for brevity
 Readonly my $CURRENT_VERSION_PATH => abs_path($0);
@@ -57,10 +60,10 @@ Readonly my $STORE_CLOSING_HOUR_24 => 23;
 # Constants used to identify which part of the data we are currently parsing
 Readonly my %PARSER_EVENTS =>
 (
-    UNKNOWN => -1,
-    HEADER => 0,
-    TRANSACTION => 1,
-    REPORT => 2
+    UNKNOWN     => -1,
+    HEADER      =>  0,
+    TRANSACTION =>  1,
+    REPORT      =>  2
 );
 
 # File IO 
@@ -69,14 +72,16 @@ my $logFile; # Log file descriptor, used in multiple functions
 my $csvFile; # CSV file descriptor, used for output
 my $serialPort; # Serial port file descriptor, used for input
 
-# Updates
+# Updates and Idle Mode
 my $updateAvailable = 0; # Update flag
 my $postUpdateExecuted; # Filename referred to in postUpdate()
+my $idleMode = FALSE; # Flag which tests if we have entered idle mode
 
 # Parser State Variables
 my $previousEvent = $PARSER_EVENTS{UNKNOWN}; # Track the previous event, used for counting transactions
+my $previousEventTime = "0"; # Stores the time of the previous event (in  a string)
 my $currentEvent = $PARSER_EVENTS{UNKNOWN}; # Tracks the current type of data being parsed
-my $currentEventTime = 0; # Store the time of the current event
+my $currentEventTime = "0"; # Store the time of the current event (in a string)
 my $transactionCount = 1; # Counter for number of transactions per hour / day
 
 # This data structure holds data for each of the columns which will eventually comprise the CSV file
@@ -89,22 +94,22 @@ tie %hourlyTransactionData, "Tie::IxHash";
 # Initial values are set to zero
 %hourlyTransactionData =
 (
-    "Hours" => 0,
-    "Total Takings" => 0,
-    "Cash" => 0,
-    "Credit Cards" => 0,
-    "Hot Food" => 0,
-    "Cold Takeaway" => 0,
-    "Meal Deal" => 0,
-    "Drinks" => 0,
-    "Crisps" => 0,
-    "Bread & Rolls" => 0,
-    "Cakes" => 0,
-    "Celebration Cakes" => 0,
-    "Party Platters" => 0,
-    "Customer Count" => 0,
-    "First Transaction" => 0,
-    "Last Transaction" => 0
+    "Hours"             => "0",
+    "Total Takings"     => "0",
+    "Cash"              => "0",
+    "Credit Cards"      => "0",
+    "Hot Food"          => "0",
+    "Cold Takeaway"     => "0",
+    "Meal Deal"         => "0",
+    "Drinks"            => "0",
+    "Crisps"            => "0",
+    "Bread & Rolls"     => "0",
+    "Cakes"             => "0",
+    "Celebration Cake"  => "0",
+    "Party Platters"    => "0",
+    "Customer Count"    => "0",
+    "First Transaction" => "0",
+    "Last Transaction"  => "0"
 );
 
 # Functions #
@@ -219,14 +224,25 @@ sub isBusinessHours
     # Return true if we are within business hours
     if ($currentHour >= $STORE_OPENING_HOUR_24 and $currentHour <= $STORE_CLOSING_HOUR_24)
     {
+        $idleMode = FALSE;
         return TRUE;
     }
 
     # Or false otherwise
     else
     {
-        close $csvFile; # Close the CSV file handle for the days' transactions
-        $transactionCount = 0; # Reset daily transaction count
+        if (!$idleMode)
+        {
+            if (defined $csvFile)
+            {
+                close $csvFile; # Close the CSV file handle for the days' transactions
+            }
+
+            clearData(); # Clear the stored data
+            $transactionCount = 1; # Reset the daily transaction count
+            $idleMode = TRUE;
+        }
+
         return FALSE;
     }
 }
@@ -361,16 +377,36 @@ sub parseHeader
     # Check that the extraction succeeded 
     if ($1)
     {
-        # This will be used to store data for the next hour
+        # Keep track of the previous event time if there is one, ignoring reports
+        if ($currentEventTime ne "0" and $currentEvent != $PARSER_EVENTS{REPORT})
+        {
+            # Used to set the last transaction time per hour
+            $previousEventTime = $currentEventTime;
+        }
+
         $currentEventTime = $1;
+        my $currentEventHour = substr($currentEventTime, 0, 2);
+
+        # When we have finished gathering data for the hour, we need to take it and write it out to the CSV file
+
+        # If the current hour is different to the hour of the most recent transaction and this is not the beginning of the day
+        if ($currentEventHour ne substr($hourlyTransactionData{"Hours"}, 0, 2) and $currentEvent != $PARSER_EVENTS{UNKNOWN})
+        {
+            # Set the last transaction time
+            $hourlyTransactionData{"Last Transaction"} = $previousEventTime;
+
+            # Write the collected data to the CSV file and clear the data structure
+            logMsg("Generating CSV for " . $hourlyTransactionData{"Hours"});
+            generateCSV();
+            clearData();
+        }
 
         # If no first transaction has been logged for the current hour
-        if ($hourlyTransactionData{"First Transaction"} == 0)
+        if ($hourlyTransactionData{"First Transaction"} eq "0")
         {
             # Set the 'Hours' field accordingly, in the format "HH.00 - HH+1.00"
-            my $hourOnly = substr($currentEventTime, 2);
-            my $nextHour = $hourOnly+1;
-            $hourlyTransactionData{"Hours"} = "$hourOnly.00-$nextHour.00";
+            my $nextHour = $currentEventHour+1;
+            $hourlyTransactionData{"Hours"} = "$currentEventHour.00-$nextHour.00";
 
             # Store the time of the first transaction
             $hourlyTransactionData{"First Transaction"} = $currentEventTime;           
@@ -378,7 +414,11 @@ sub parseHeader
     }
 
     $currentEvent = $PARSER_EVENTS{HEADER};
-    print "HEADER AT $currentEventTime\n";
+
+    if ($DEBUG_ENABLED)
+    {
+        print "HEADER AT $currentEventTime\n";
+    }
 
     return;
 }
@@ -399,8 +439,8 @@ sub parseTransaction
     # Treat the "TOTAL" line differently to a standard transaction line
     if (index($transactionKey, "TOTAL") != -1)
     {
-        # Add to the hourly total
-        $hourlyTransactionData{"Total"} += $transactionValue;
+        # Add to the hourly total 
+        $hourlyTransactionData{"Total Takings"} += $transactionValue;
         return;
     }
 
@@ -414,9 +454,14 @@ sub parseTransaction
 
     else
     {
+        if ($DEBUG_ENABLED)
+        {
+            print "\tITEM FOR TRANSACTION $transactionCount\n";
+        }
+
         # For regular transactions, add to the total for that type of product
-        print "\tITEM FOR TRANSACTION $transactionCount\n";
-        $hourlyTransactionData{$transactionKey} += $transactionValue; 
+        rtrim($transactionKey); # Remove any trailing spaces
+        $hourlyTransactionData{$transactionKey} += $transactionValue; # Add to the appropriate column in the data
 
         return;
     }
@@ -444,13 +489,28 @@ sub parseLine
         # Increment number of transactions if we have just processed one
         if ($previousEvent == $PARSER_EVENTS{TRANSACTION})
         {
-            $hourlyTransactionData{"Customer Count"} += $transactionCount;
+            $transactionCount++;
+            $hourlyTransactionData{"Customer Count"} = $transactionCount;
         }
 
         # If the line contains a price we are parsing a transaction
         if (index($dataLine, '£') != -1)
         {
-            parseTransaction($dataLine);
+            (my $PLU, undef) = split ('£', $dataLine, 2); # Extract the PLU
+
+            trim($PLU); # Remove leading and trailing spaces
+
+            # Ensure the PLU / key matches one of the expected categories
+            if (exists ($hourlyTransactionData{$PLU}))
+            {
+                parseTransaction($dataLine);
+            }
+
+            else
+            {
+                logMsg("$PLU not recognised, not storing\n");
+            }
+
             return;
         }
 
@@ -459,7 +519,8 @@ sub parseLine
         # data from individual transactions, this may change in future
         if (index($dataLine, 'REPORT') != -1)
         {
-            $currentEvent = $PARSER_EVENTS{REPORT};
+            $previousEvent = $PARSER_EVENTS{UNKNOWN};
+            $currentEvent  = $PARSER_EVENTS{REPORT};
             return;
         }
     }
@@ -478,8 +539,15 @@ sub clearData
     # Iterate over the hash
     foreach my $key (keys %hourlyTransactionData)
     {
-        $hourlyTransactionData{$key} = 0;
+        # Reset each value
+        $hourlyTransactionData{$key} = "0";
     }
+
+    # Reset the hourly transaction count
+    $transactionCount = 0;
+
+    # Reset the stored event
+    $previousEvent = $PARSER_EVENTS{UNKNOWN};
 
     return;
 }
@@ -494,15 +562,33 @@ sub generateCSV
         initialiseOutputFile();
     }
 
-    # TODO: Implement this, need to iterate through the hash and save everything accordingly
-    # Also need to set the Last Transaction time
-    
+    # Calculate amount spent on cards (TOTAL - CASH)
+    $hourlyTransactionData{"Credit Cards"} = 
+        $hourlyTransactionData{"Total Takings"} -
+        $hourlyTransactionData{"Cash"};
+
+    # Iterate through the hourly transaction data
+    while (my ($transactionKey, $transactionData) = each %hourlyTransactionData)
+    {
+        if ($transactionKey ne "Last Transaction")
+        {
+            # Write comma separated values to the file
+            print $csvFile "$transactionData,";
+        }
+
+        else
+        {
+            # Do not leave a trailing comma on the last value
+            print $csvFile "$transactionData\n";
+        }
+    }
+
     return;
 }
 
 # This function normalises a string (removes spaces and special characters and converts to lowercase)
 # It is used to compare shop names with the current hostname to assign an ID to the output file(s)
-sub normaliseString
+sub normalise
 {
     my ($rawString) = @_;
 
@@ -546,9 +632,9 @@ sub getOutputFileName
 
         (my $shopID, my $shopName) = split(',', $row, 2);
 
-        # Find a match with the current hostname
-        $shopName = normaliseString($shopName);
-        $currentHostname = normaliseString($currentHostname);
+        # Normalise the strings for comparison
+        $shopName        = normalise($shopName);
+        $currentHostname = normalise($currentHostname);
 
         if ($currentHostname =~ /$shopName/x)
         {
@@ -562,7 +648,7 @@ sub getOutputFileName
     if (!$matchedID)
     {
         $matchedID = "UNKNOWN";
-        logMsg("No match found for $currentHostname in shops.csv, setting \$matchedID to 'UNKNOWN'");
+        logMsg("No match found for '$currentHostname' in shops.csv, setting \$matchedID to 'UNKNOWN'");
     }
 
     # Set the filename in the format "yyyymmdd_matchedID.csv"
@@ -648,17 +734,6 @@ sub processData
             }
 
             $storeIsOpen = isBusinessHours();
-
-            # Once an hour we need to take the data we have and write it out to the CSV file
-            my (undef, undef, $currentHour) = localtime();
-
-            # If the current hour is different to the hour of the most recent transaction
-            if ($currentHour != substr($hourlyTransactionData{"Hours"}, 2))
-            {
-                # Write the collected data to the CSV file and clear it for the next hour
-                generateCSV();
-                clearData();
-            }
 
             # 200ms delay to save CPU cycles
             sleep(0.2);
