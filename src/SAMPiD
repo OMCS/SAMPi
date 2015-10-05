@@ -18,6 +18,8 @@
 ENABLE_LOGGING=1
 LOCKDIR=/tmp/SAMPiD.lock
 DAYS_TO_KEEP_DATA=90
+USER=shopcsv
+SERVER=wenzelsextranet.co.uk
 
 cleanup()
 {
@@ -68,8 +70,12 @@ uploadData()
 {
     UPLOAD_PATH=$(dirname $SAMPI_PATH)/ecr_data
     echo "Uploading ECR data from $UPLOAD_PATH to server..."
+
     # rsync uses the archive, update (only send modified files), preserve time and verbose flags
-    # rsync -autv $UPLOAD_PATH/* username@server:/path/to/ecr_data
+    # rsync -autv $UPLOAD_PATH/* $USER@$SERVER
+
+    # Update the local copy of the shops.csv file if required
+    # rsync -autv $USER@$SERVER:/shops.csv $(dirname $SAMPI_PATH)
 }
 
 # Remove any data older than the threshold to preserve space on the device

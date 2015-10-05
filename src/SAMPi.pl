@@ -30,8 +30,9 @@ use Device::SerialPort; # Serial IO library
 use LWP::Simple qw(getstore is_error $ua); # Used to download updates
 use Digest::SHA1 qw(sha1_base64); # SHA1 checksum library
 use Time::HiRes qw(sleep); # Allows sleeping for less than a second
+use Tie::IxHash; # Preserve insertion order on hash
 
-use File::Spec qw(tmpdir); # Used to get portable temporary directory path
+use File::Spec qw(tmpdir updir); # Used to get portable directory paths
 use File::Compare; # Compare currently running script and downloaded script
 use File::Touch; # Perl implementation of the UNIX 'touch' command
 use File::Copy; # Provides the copy function
@@ -40,7 +41,7 @@ use Cwd qw(abs_path); # Get absolute path of currently executing script
 
 # Globally accessible constants and variables #
 
-Readonly our $VERSION => 0.5;
+Readonly our $VERSION => 0.6;
 Readonly my $LOGGING_ENABLED => TRUE; # Enable or disable logging to file
 Readonly my $UPDATE_HOOK_ENABLED => FALSE; # Attempt to call the postUpdate() function once on start if TRUE
 
@@ -53,19 +54,13 @@ Readonly my $UPDATE_CHECK_DELAY_MINUTES => 20; # Check for updates every 20 minu
 Readonly my $STORE_OPENING_HOUR_24 => 6;
 Readonly my $STORE_CLOSING_HOUR_24 => 23;
 
-# Constants used to identify which part of the data we are currently parsing, in a hash to allow for dynamic access
+# Constants used to identify which part of the data we are currently parsing
 Readonly my %PARSER_EVENTS =>
 (
     UNKNOWN => -1,
     HEADER => 0,
     TRANSACTION => 1,
-    REPORT => 2,
-    Z1_REPORT => 3,
-    Z2_REPORT => 4,
-    Z3_REPORT => 5,
-    X1_REPORT => 6,
-    X2_REPORT => 7,
-    X3_REPORT => 8
+    REPORT => 2
 );
 
 # File IO 
@@ -79,21 +74,65 @@ my $updateAvailable = 0; # Update flag
 my $postUpdateExecuted; # Filename referred to in postUpdate()
 
 # Parser State Variables
-my $currentDate; # Stores the current date in a string 
 my $previousEvent = $PARSER_EVENTS{UNKNOWN}; # Track the previous event, used for counting transactions
 my $currentEvent = $PARSER_EVENTS{UNKNOWN}; # Tracks the current type of data being parsed
 my $currentEventTime = 0; # Store the time of the current event
-my $transactionCount = 1; # Counter for number of transactions per day
-my $currentReportType; # Either 'Z' or 'X' when reading a report
+my $transactionCount = 1; # Counter for number of transactions per hour / day
+
+# This data structure holds data for each of the columns which will eventually comprise the CSV file
+# We store transactions as we read them, make calculations from this data and convert it to CSV hourly
+my %hourlyTransactionData;
+
+# Tie this hash to preserve insertion order for use as CSV column headings
+tie %hourlyTransactionData, "Tie::IxHash";
+
+# Initial values are set to zero
+%hourlyTransactionData =
+(
+    "Hours" => 0,
+    "Total Takings" => 0,
+    "Cash" => 0,
+    "Credit Cards" => 0,
+    "Hot Food" => 0,
+    "Cold Takeaway" => 0,
+    "Meal Deal" => 0,
+    "Drinks" => 0,
+    "Crisps" => 0,
+    "Bread & Rolls" => 0,
+    "Cakes" => 0,
+    "Celebration Cakes" => 0,
+    "Party Platters" => 0,
+    "Customer Count" => 0,
+    "First Transaction" => 0,
+    "Last Transaction" => 0
+);
 
 # Functions #
+
+# Utility function which returns the current date in yyyymmdd as an array
+sub getCurrentDate
+{
+    my @timestamp = localtime();
+    
+    my $currentYear  = $timestamp[5] + 1900; # Need to add 1900 to get the current year
+    my $currentMonth = $timestamp[4] + 1; # Months from localtime() are zero-indexed
+    my $currentDay   = $timestamp[3];
+
+    if ($currentDay < 10)
+    {
+        $currentDay = "0" . $currentDay; # Pad day
+    }
+
+    my @currentDate = ($currentYear, $currentMonth, $currentDay);
+
+    return @currentDate;
+}
 
 # Simple function to print logging messages  with a timestamp to a file and / or stdout 
 sub logMsg
 {
     # Take the message passed in as the first parameter and get the current time and date
     my $logMessage = shift;
-    my @timestamp = localtime();
     my $timestampStr = localtime();
 
     # Write message to file if logging is enabled
@@ -102,12 +141,8 @@ sub logMsg
         if ($logOpen == 0)
         {
             # Create a new log file each month with the month and year included in the filename
-            my $currentDay = $timestamp[3];
-            my $currentMonth = $timestamp[4] + 1; # Months from localtime() are zero-indexed
-            my $currentYear = $timestamp[5] + 1900; # Need to add 1900 to get the current year
-            my $logFileName = "SAMPi-" . $currentMonth . "-" . $currentYear . ".log"; # Construct the filename
-
-            $currentDate = $currentDay . "-" . $currentMonth . "-"  . $currentYear;
+            my @currentDate = getCurrentDate(); # Returned as year, month and day
+            my $logFileName = "SAMPi-" . $currentDate[1] . "-" . $currentDate[2] . ".log"; # Construct the filename
 
             # Attempt to open the log file (located in the directory of the currently running script) in append mode
             ## no critic qw(RequireBriefOpen)
@@ -301,7 +336,7 @@ sub postUpdate
     return;
 }
 
-# This function is the third part of the first-stage parser, it processes headers
+# This function is part of the parser, it processes headers
 # Each header represents a separate event (transaction or report) and includes a 
 # timestamp which is extracted and stored for later use
 sub parseHeader
@@ -326,8 +361,20 @@ sub parseHeader
     # Check that the extraction succeeded 
     if ($1)
     {
-        # Store the time for later use
-        $currentEventTime = $1; 
+        # This will be used to store data for the next hour
+        $currentEventTime = $1;
+
+        # If no first transaction has been logged for the current hour
+        if ($hourlyTransactionData{"First Transaction"} == 0)
+        {
+            # Set the 'Hours' field accordingly, in the format "HH.00 - HH+1.00"
+            my $hourOnly = substr($currentEventTime, 2);
+            my $nextHour = $hourOnly+1;
+            $hourlyTransactionData{"Hours"} = "$hourOnly.00-$nextHour.00";
+
+            # Store the time of the first transaction
+            $hourlyTransactionData{"First Transaction"} = $currentEventTime;           
+        }
     }
 
     $currentEvent = $PARSER_EVENTS{HEADER};
@@ -336,7 +383,7 @@ sub parseHeader
     return;
 }
 
-# This function is the second part of the first-stage parser, it processes transactions
+# This function is part of the parser, it processes transactions
 # Each transaction is part of a group and contains the PLU and price for one or more 
 # items. These are processed as key-value pairs with consideration for lines that
 # do not represent PLUs (e.g. totals or payment method listings)
@@ -352,119 +399,30 @@ sub parseTransaction
     # Treat the "TOTAL" line differently to a standard transaction line
     if (index($transactionKey, "TOTAL") != -1)
     {
-        # TODO: Implement this
+        # Add to the hourly total
+        $hourlyTransactionData{"Total"} += $transactionValue;
         return;
     }
 
     # Same for the 'CASH' line
     elsif (index($transactionKey, "CASH") != -1)
     {
-        # TODO: Implement this
+        # Add to the hourly total for cash payments
+        $hourlyTransactionData{"Cash"} += $transactionValue;
         return;
     }
 
     else
     {
-        # For regular transactions, pass the separated data to the second-stage parser for formatting into CSV
-        parsedLineToCSV($transactionKey, $transactionValue);
+        # For regular transactions, add to the total for that type of product
         print "\tITEM FOR TRANSACTION $transactionCount\n";
+        $hourlyTransactionData{$transactionKey} += $transactionValue; 
 
         return;
     }
 }
 
-# This function is the third part of the first-stage parser, it processes reports
-# There are six kinds of report (Z1,Z2,Z3 or X1,X2,X3) and this function accepts
-# a parameter which determines the type of report to be processed
-sub parseReport
-{
-    my ($reportLine) = @_;
-
-    # If this is the first line of a report
-    if ($currentEvent != $PARSER_EVENTS{REPORT})
-    {
-        $currentEvent = $PARSER_EVENTS{REPORT};
-
-        # Set report type to Z or X depending on first character of line
-        $currentReportType = (substr($reportLine, 0, 1) eq 'Z') ? 'Z' : 'X'; 
-    }
-
-    if ($reportLine =~ /^FINANCIAL/x or $currentEvent == $PARSER_EVENTS{Z1_REPORT} or $currentEvent == $PARSER_EVENTS{X1_REPORT})
-    {
-        print "\t$currentReportType" . "1 REPORT\n";
-        parseKnownReport(1); # This function sets the correct currentEvent and does other processing
-        return;
-    }
-
-    elsif ($reportLine =~ /^TIME/x or $currentEvent == $PARSER_EVENTS{Z2_REPORT} or $currentEvent == $PARSER_EVENTS{X2_REPORT})
-    {
-        print "\t$currentReportType" . "2 REPORT\n";
-        parseKnownReport(2);
-        return;
-    }
-
-    elsif ($reportLine =~ /^ALL\sPLU/x or $currentEvent == $PARSER_EVENTS{Z3_REPORT} or $currentEvent == $PARSER_EVENTS{X3_REPORT})
-    {
-        print "\t$currentReportType" . "3 REPORT\n";
-        parseKnownReport(3);
-    }
-
-    return;
-}
-
-# This function assists with the general report parsing function and parses known reports
-# it also sets the currentEvent variable to keep track of the state of data processing
-sub parseKnownReport
-{
-    my ($reportNum) = @_;
-
-    # Concatenate the identifier 
-    my $reportStr = $currentReportType . $reportNum . "_REPORT";
-
-    # Use dynamic variable substitution to set the correct variable
-    # This prevents replicating the same code for X and Z reports
-    $currentEvent = $PARSER_EVENTS{$reportStr};
-
-    if ($currentEvent == $PARSER_EVENTS{Z1_REPORT})
-    {
-        print("\t\tZ1 NOT IMPLEMENTED\n");
-        return;
-    }
-
-    if ($currentEvent == $PARSER_EVENTS{Z2_REPORT})
-    {
-        print("\t\tZ2 NOT IMPLEMENTED\n");
-        return;
-    }
-
-    if ($currentEvent == $PARSER_EVENTS{Z3_REPORT})
-    {
-        print("\t\tZ3 NOT IMPLEMENTED\n");
-        return;
-    }
-
-    if ($currentEvent == $PARSER_EVENTS{X1_REPORT})
-    {
-        print("\t\tX1 NOT IMPLEMENTED\n");
-        return;
-    }
-
-    if ($currentEvent == $PARSER_EVENTS{X2_REPORT})
-    {
-        print("\t\tX2 NOT IMPLEMENTED\n");
-        return;
-    }
-
-    if ($currentEvent == $PARSER_EVENTS{X3_REPORT})
-    {
-        print("\t\tX3 NOT IMPLEMENTED\n");
-        return;
-    }
-}
-
-# This function is responsible for the first-stage parsing of a line of serial data with regard to the current state of the data
-# This stage differentiates between transaction reports, z-reports and x-reports and separates events for further processing
-# Into CSV format via the parsedLineToCSV() function.
+# This function is responsible for parsing a line of serial data and storing various information which is later converted to CSV
 sub parseLine
 {
     # The line of data passed in as a parameter will be accessible as $dataLine
@@ -483,23 +441,25 @@ sub parseLine
     # Process the first line after a header
     if ($currentEvent == $PARSER_EVENTS{HEADER})
     {
-        # Count transactions if we have just processed one
+        # Increment number of transactions if we have just processed one
         if ($previousEvent == $PARSER_EVENTS{TRANSACTION})
         {
-            $transactionCount++;
+            $hourlyTransactionData{"Customer Count"} += $transactionCount;
         }
 
-        # If the line after the header contains "REPORT", we are reading (one of six types of) report
-        if (index($dataLine, "REPORT") != -1)
-        {
-            parseReport($dataLine);
-            return; 
-        }
-
-        # Otherwise, we are reading a transaction event
-        elsif (index($dataLine, '£') != -1)
+        # If the line contains a price we are parsing a transaction
+        if (index($dataLine, '£') != -1)
         {
             parseTransaction($dataLine);
+            return;
+        }
+
+        # If the line matches a report, ignore it until the next header
+        # We are currently ignoring reports in favour of collecting
+        # data from individual transactions, this may change in future
+        if (index($dataLine, 'REPORT') != -1)
+        {
+            $currentEvent = $PARSER_EVENTS{REPORT};
             return;
         }
     }
@@ -510,82 +470,140 @@ sub parseLine
         parseTransaction($dataLine);
         return;
     }
-
-    elsif ($currentEvent == $PARSER_EVENTS{REPORT} or $currentEvent == $PARSER_EVENTS{Z1_REPORT})
-    {
-        parseReport($dataLine);
-        return;
-    }
 }
 
-# This function is the second-stage parser and accepts processed data, performs further parsing
-# and converts the data into CSV format in preparation for uploading 
-# TODO: Finish implementing this function
+# This function resets the hourlyTransactionData hash to ready it for another hour of data
+sub clearData
+{
+    # Iterate over the hash
+    foreach my $key (keys %hourlyTransactionData)
+    {
+        $hourlyTransactionData{$key} = 0;
+    }
+
+    return;
+}
+
+# This function writes the stored data to CSV format for uploading 
 ## no critic qw(RequireArgUnpacking)
-sub parsedLineToCSV
+sub generateCSV
 {
     # Create an appropriately named CSV file and open it in append mode if it does not already exist
     if (!$csvFile)
     {
-        initialiseCSVFile();
+        initialiseOutputFile();
     }
 
-    my $numParameters = @_;
-
-    # Handle single values
-    if ($numParameters == 1)
-    {
-        my ($transactionKey) = @_;
-
-        if (index($transactionKey, 'TOTAL') != -1)
-        {
-            return;
-            #print $csvFile "Total is $transactionKey\n";
-        }
-    }
-
-    # Handle key value pairs 
-    if ($numParameters == 2)
-    {
-        my ($transactionKey, $transactionValue) = @_;
-
-        print $csvFile "$transactionCount, $currentEventTime, $transactionKey, £$transactionValue\n";
-    }
+    # TODO: Implement this, need to iterate through the hash and save everything accordingly
+    # Also need to set the Last Transaction time
     
     return;
 }
 
+# This function normalises a string (removes spaces and special characters and converts to lowercase)
+# It is used to compare shop names with the current hostname to assign an ID to the output file(s)
+sub normaliseString
+{
+    my ($rawString) = @_;
+
+    $rawString =~ s/[^\w]//gx;
+
+    return lc($rawString);
+}
+
+# This function reads in the "shops.csv" file in the current parent directory and assigns an ID based on
+# The closest match between the current hostname and a shop name in the file, this is used to correctly
+# name CSV output files without this being hardcoded in the source
+sub getOutputFileName
+{
+    # Get the hostname and the filepath of the shops file
+    my $currentHostname = hostname();
+    my $shopFilePath = File::Spec->updir() . $DIRECTORY_SEPARATOR . "shops.csv";
+
+    # File handles for the shops file
+    my $shopIDFile;
+
+    # Undef if not matched
+    my $matchedID = undef;
+
+    # Get the current date for use in the filename
+    my @currentDate = getCurrentDate();
+
+    # Open the shops file in read mode
+    ## no critic qw(RequireBriefOpen)
+    my $open = open($shopIDFile, "<", $shopFilePath);
+    
+    if (!$open)
+    {
+        logMsg("Error opening $shopFilePath: $!");
+        die "Error opening $shopFilePath: $!";
+    }
+
+    # Iterate through
+    while (my $row = <$shopIDFile>)
+    {
+        chomp($row);
+
+        (my $shopID, my $shopName) = split(',', $row, 2);
+
+        # Find a match with the current hostname
+        $shopName = normaliseString($shopName);
+        $currentHostname = normaliseString($currentHostname);
+
+        if ($currentHostname =~ /$shopName/x)
+        {
+             $matchedID = $shopID;
+        }
+    }
+
+    close $shopIDFile;
+
+    # If we couldn't find a match, set $matchedID to "UNKNOWN" and log a warning
+    if (!$matchedID)
+    {
+        $matchedID = "UNKNOWN";
+        logMsg("No match found for $currentHostname in shops.csv, setting \$matchedID to 'UNKNOWN'");
+    }
+
+    # Set the filename in the format "yyyymmdd_matchedID.csv"
+    my $outputFileName = dirname(dirname($CURRENT_VERSION_PATH)) . $DIRECTORY_SEPARATOR . "ecr_data" . $DIRECTORY_SEPARATOR .
+        $currentDate[0] . $currentDate[1] . $currentDate[2] . "_$matchedID.csv";
+
+    return $outputFileName;
+}
+
 # This function creates a CSV file in the local ecr_data directory with a list of predefined headings
 # and named with the date of creation and hostname of the machine SAMPi is running on
-sub initialiseCSVFile
+sub initialiseOutputFile
 {
-    my $hostname = hostname();
-    my $csvFilePath = dirname(dirname($CURRENT_VERSION_PATH)) . $DIRECTORY_SEPARATOR . "ecr_data" . $DIRECTORY_SEPARATOR . $hostname . "-" . $currentDate . ".csv";
+    my @csvHeadings; # Store CSV headings
+    my $outputFilePath = getOutputFileName(); 
 
     # If the file does not exist, create it and add the correct headings
-    if (! -e $csvFilePath)
+    if (! -e $outputFilePath)
     {
-        logMsg("Creating CSV file $csvFilePath");
+        logMsg("Creating CSV file $outputFilePath");
 
         ## no critic qw(RequireBriefOpen)
-        open($csvFile, '>>', $csvFilePath) or die "Error opening CSV file: $!";
+        open($csvFile, '>>', $outputFilePath) or die "Error opening CSV file: $!";
 
-        my @csvHeadings = ("ID", "TIME", "PLU", "PRICE");
+        # Define the headings for the output file, these match the keys defined in the hourlyTransactionData hash
+        foreach my $key (keys %hourlyTransactionData)
+        {
+            push(@csvHeadings, $key); # First argument is array, second is value to push
+        }
 
         # Write the headings to the file
-        for my $currentHeading (0..$#csvHeadings) 
+        for my $i (0..$#csvHeadings) 
         {
-            for ($csvHeadings[$currentHeading]) 
+            if ($i == $#csvHeadings)
             {
-                if ($currentHeading == $#csvHeadings)
-                {
-                    print $csvFile "$_\n";
-                }
+                print $csvFile "$csvHeadings[$i]\n"; # No comma
+            }
 
-                else
-                {
-                    print $csvFile "$_,";
-                }
+            else
+            {
+                print $csvFile "$csvHeadings[$i],";
             }
         }
     }
@@ -593,9 +611,9 @@ sub initialiseCSVFile
     # If the file already exists, simply open it in append mode
     else
     {
-        logMsg("Opening existing CSV file $csvFilePath");
+        logMsg("Opening existing CSV file $outputFilePath");
         ## no critic qw(RequireBriefOpen)
-        open($csvFile, '>>', $csvFilePath) or die "Error opening CSV file: $!";
+        open($csvFile, '>>', $outputFilePath) or die "Error opening CSV file: $!";
     }
 
     $csvFile->autoflush(1);
@@ -630,6 +648,17 @@ sub processData
             }
 
             $storeIsOpen = isBusinessHours();
+
+            # Once an hour we need to take the data we have and write it out to the CSV file
+            my (undef, undef, $currentHour) = localtime();
+
+            # If the current hour is different to the hour of the most recent transaction
+            if ($currentHour != substr($hourlyTransactionData{"Hours"}, 2))
+            {
+                # Write the collected data to the CSV file and clear it for the next hour
+                generateCSV();
+                clearData();
+            }
 
             # 200ms delay to save CPU cycles
             sleep(0.2);
