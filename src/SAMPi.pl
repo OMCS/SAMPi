@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 #
-# SAMPi - SAM4S ECR data reader, parser and logger (Last Modified 06/10/2015)
+# SAMPi - SAM4S ECR data reader, parser and logger (Last Modified 07/10/2015)
 #
 # This software runs in the background on a suitably configured Raspberry Pi,
 # reads from a connected SAM4S ECR via serial connection, extracts various data,
@@ -31,7 +31,7 @@ use Device::SerialPort; # Serial IO library
 use LWP::Simple qw(getstore is_error $ua); # Used to download updates
 use Digest::SHA1 qw(sha1_base64); # SHA1 checksum library
 use Time::HiRes qw(sleep); # Allows sleeping for less than a second
-use Tie::IxHash; # Preserve insertion order on hash
+use Tie::IxHash; # Preserve the insertion order of hashes
 use Text::Trim; # Remove leading and trailing whitespace
 
 use File::Spec qw(tmpdir updir); # Used to get portable directory paths
@@ -44,14 +44,16 @@ use Cwd qw(abs_path); # Get absolute path of currently executing script
 
 # Globally accessible constants and variables #
 
-Readonly our $VERSION => 0.7.5;
-Readonly my $LOGGING_ENABLED => TRUE; # Enable or disable logging to file
-Readonly my $UPDATE_HOOK_ENABLED => FALSE; # Attempt to call the postUpdate() function once on start if TRUE
-Readonly my $DEBUG_ENABLED => FALSE; # If enabled, the parser will print information as it runs and read the time from file
+Readonly our $VERSION => 0.75;
 
-Readonly my $DIRECTORY_SEPARATOR => ($^O=~/Win/) ? "\\" : "/"; # Ternary operator used for brevity
-Readonly my $CURRENT_VERSION_PATH => abs_path($0);
-Readonly my $LATEST_VERSION_PATH => File::Spec->tmpdir() . $DIRECTORY_SEPARATOR . "SAMPi.pl";
+Readonly my $LOGGING_ENABLED     => TRUE; # Enable or disable logging to file
+Readonly my $UPDATE_HOOK_ENABLED => FALSE; # Attempt to call the postUpdate() function once on start if TRUE
+Readonly my $DEBUG_ENABLED       => FALSE; # If enabled, the parser will print information as it runs
+Readonly my $TIME_FROM_SERIAL    => TRUE; # If enabled, read current time from latest serial header instead of clock
+
+Readonly my $DIRECTORY_SEPARATOR        => ($^O=~/Win/) ? "\\" : "/"; # Ternary operator used for brevity
+Readonly my $CURRENT_VERSION_PATH       => abs_path($0);
+Readonly my $LATEST_VERSION_PATH        => File::Spec->tmpdir() . $DIRECTORY_SEPARATOR . "SAMPi.pl";
 Readonly my $UPDATE_CHECK_DELAY_MINUTES => 20; # Check for updates every 20 minutes in idle mode
 
 # Define opening and closing hours
@@ -61,15 +63,15 @@ Readonly my $STORE_CLOSING_HOUR_24 => 23;
 # Constants used to identify which part of the data we are currently parsing
 Readonly my %PARSER_EVENTS =>
 (
-    UNKNOWN     => -1,
     HEADER      =>  0,
     TRANSACTION =>  1,
-    REPORT      =>  2
+    OTHER       =>  2,
 );
 
 # File IO 
 my $logOpen = 0; # Flag to determine if log file has been opened
 my $logFile; # Log file descriptor, used in multiple functions
+my $csvOpen = 0; # Flag as above
 my $csvFile; # CSV file descriptor, used for output
 my $serialPort; # Serial port file descriptor, used for input
 
@@ -79,9 +81,9 @@ my $postUpdateExecuted; # Filename referred to in postUpdate()
 my $idleMode = FALSE; # Flag which tests if we have entered idle mode
 
 # Parser State Variables
-my $previousEvent = $PARSER_EVENTS{UNKNOWN}; # Track the previous event, used for counting transactions
+my $previousEvent = $PARSER_EVENTS{OTHER}; # Track the previous event, used for counting transactions
 my $previousEventTime = "0"; # Stores the time of the previous event (in  a string)
-my $currentEvent = $PARSER_EVENTS{UNKNOWN}; # Tracks the current type of data being parsed
+my $currentEvent = $PARSER_EVENTS{OTHER}; # Tracks the current type of data being parsed
 my $currentEventTime = "0"; # Store the time of the current event (in a string)
 my $transactionCount = 1; # Counter for number of transactions per hour / day
 
@@ -115,6 +117,7 @@ tie %hourlyTransactionData, "Tie::IxHash";
 
 # Copy for reverting to if required
 my %hourlyTransactionDataCopy;
+tie %hourlyTransactionDataCopy, "Tie::IxHash";
 
 # Functions #
 
@@ -240,6 +243,7 @@ sub isBusinessHours
             if (defined $csvFile)
             {
                 close $csvFile; # Close the CSV file handle for the days' transactions
+                $csvOpen = 0;
             }
 
             clearData(); # Clear the stored data
@@ -370,10 +374,7 @@ sub parseHeader
         $previousEvent = $PARSER_EVENTS{TRANSACTION};
     }
 
-    else
-    {
-        $previousEvent = $PARSER_EVENTS{UNKNOWN};
-    }
+    $currentEvent = $PARSER_EVENTS{HEADER};
 
     # Extract the event time into the $1 reserved variable
     $headerLine =~ /([0-9][0-9]:[0-9][0-9])/x;
@@ -382,7 +383,7 @@ sub parseHeader
     if ($1)
     {
         # Keep track of the previous event time if there is one, ignoring reports
-        if ($currentEventTime ne "0" and $currentEvent != $PARSER_EVENTS{REPORT})
+        if ($currentEventTime ne "0" and $currentEvent != $PARSER_EVENTS{OTHER})
         {
             # Used to set the last transaction time per hour
             $previousEventTime = $currentEventTime;
@@ -394,7 +395,7 @@ sub parseHeader
         # When we have finished gathering data for the hour, we need to take it and write it out to the CSV file
 
         # If the current hour is different to the hour of the most recent transaction and this is not the beginning of the day
-        if ($currentEventHour ne substr($hourlyTransactionData{"Hours"}, 0, 2) and $currentEvent != $PARSER_EVENTS{UNKNOWN})
+        if ($currentEventHour ne substr($hourlyTransactionData{"Hours"}, 0, 2) and $hourlyTransactionData{"Hours"} ne "0")
         {
             # Set the last transaction time
             $hourlyTransactionData{"Last Transaction"} = $previousEventTime;
@@ -416,8 +417,6 @@ sub parseHeader
             $hourlyTransactionData{"First Transaction"} = $currentEventTime;           
         }
     }
-
-    $currentEvent = $PARSER_EVENTS{HEADER};
 
     if ($DEBUG_ENABLED)
     {
@@ -510,14 +509,23 @@ sub parseLine
         # Reset the state of the hourly transaction data to how it was before the current transaction
         logMsg("Ignoring cancelled transaction at $currentEventTime");
         %hourlyTransactionData = %hourlyTransactionDataCopy;
+        $transactionCount--;
         return;
     }
 
     # Ignore refunds for now, we aren't tracking them
-    elsif ($dataLine =~/^PAID\sOUT/x and $currentEvent != $PARSER_EVENTS{UNKNOWN})
+    elsif ($dataLine =~/^PAID\sOUT/x and $currentEvent != $PARSER_EVENTS{OTHER})
     {
         logMsg("SAMPi does not currently implement refund tracking, ignoring");
-        $currentEvent = $PARSER_EVENTS{UNKNOWN};
+        $currentEvent = $PARSER_EVENTS{OTHER};
+        return;
+    }
+
+    # Ignore any settings or debugging information on the printout 
+    elsif ($dataLine =~/=/x and $currentEvent != $PARSER_EVENTS{OTHER}) 
+    {
+        logMsg("Ignoring diagnostic output");
+        $currentEvent = $PARSER_EVENTS{OTHER};
         return;
     }
 
@@ -530,7 +538,7 @@ sub parseLine
         # Increment number of transactions if we have just processed one
         if ($previousEvent == $PARSER_EVENTS{TRANSACTION})
         {
-            $hourlyTransactionData{"Customer Count"} = $transactionCount;
+            $transactionCount++;
 
             if ($DEBUG_ENABLED)
             {
@@ -553,7 +561,7 @@ sub parseLine
 
             else
             {
-                logMsg("$PLU not recognised, not storing");
+                logMsg("\"$PLU\" not recognised, ignoring");
             }
 
             return;
@@ -564,8 +572,7 @@ sub parseLine
         # data from individual transactions, this may change in future
         if (index($dataLine, 'REPORT') != -1)
         {
-            $previousEvent = $PARSER_EVENTS{UNKNOWN};
-            $currentEvent  = $PARSER_EVENTS{REPORT};
+            $currentEvent  = $PARSER_EVENTS{OTHER};
             return;
         }
     }
@@ -591,9 +598,6 @@ sub clearData
     # Reset the hourly transaction count
     $transactionCount = 0;
 
-    # Reset the stored event
-    $previousEvent = $PARSER_EVENTS{UNKNOWN};
-
     return;
 }
 
@@ -602,10 +606,12 @@ sub clearData
 sub generateCSV
 {
     # Create an appropriately named CSV file and open it in append mode if it does not already exist
-    if (!$csvFile)
+    if (!$csvOpen)
     {
         initialiseOutputFile();
     }
+
+    $hourlyTransactionData{"Customer Count"} = $transactionCount;
 
     # Iterate through the hourly transaction data
     while (my ($transactionKey, $transactionData) = each %hourlyTransactionData)
@@ -684,7 +690,7 @@ sub getOutputFileName
 
     close $shopIDFile;
 
-    # If we couldn't find a match, set $matchedID to "UNKNOWN" and log a warning
+    # If we couldn't find a match, set $matchedID to "OTHER" and log a warning
     if (!$matchedID)
     {
         $matchedID = "UNKNOWN";
@@ -711,7 +717,7 @@ sub initialiseOutputFile
         logMsg("Creating CSV file $outputFilePath");
 
         ## no critic qw(RequireBriefOpen)
-        open($csvFile, '>>', $outputFilePath) or die "Error opening CSV file: $!";
+        $csvOpen = open($csvFile, '>>', $outputFilePath) or die "Error opening CSV file: $!";
 
         # Define the headings for the output file, these match the keys defined in the hourlyTransactionData hash
         foreach my $key (keys %hourlyTransactionData)
@@ -739,7 +745,7 @@ sub initialiseOutputFile
     {
         logMsg("Opening existing CSV file $outputFilePath");
         ## no critic qw(RequireBriefOpen)
-        open($csvFile, '>>', $outputFilePath) or die "Error opening CSV file: $!";
+        $csvOpen = open($csvFile, '>>', $outputFilePath) or die "Error opening CSV file: $!";
     }
 
     $csvFile->autoflush(1);
