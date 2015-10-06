@@ -46,10 +46,10 @@ use Cwd qw(abs_path); # Get absolute path of currently executing script
 
 Readonly our $VERSION => 0.75;
 
-Readonly my $LOGGING_ENABLED     => TRUE; # Enable or disable logging to file
-Readonly my $UPDATE_HOOK_ENABLED => FALSE; # Attempt to call the postUpdate() function once on start if TRUE
-Readonly my $DEBUG_ENABLED       => FALSE; # If enabled, the parser will print information as it runs
-Readonly my $TIME_FROM_SERIAL    => TRUE; # If enabled, read current time from latest serial header instead of clock
+Readonly my $LOGGING_ENABLED        => TRUE; # Enable or disable logging to file
+Readonly my $UPDATE_HOOK_ENABLED    => FALSE; # Attempt to call the postUpdate() function once on start if TRUE
+Readonly my $VERBOSE_PARSER_ENABLED => FALSE; # If enabled, the parser will print information as it runs
+Readonly my $DEBUG_ENABLED          => TRUE; # If enabled, read current time from latest serial header instead of clock
 
 Readonly my $DIRECTORY_SEPARATOR        => ($^O=~/Win/) ? "\\" : "/"; # Ternary operator used for brevity
 Readonly my $CURRENT_VERSION_PATH       => abs_path($0);
@@ -68,12 +68,13 @@ Readonly my %PARSER_EVENTS =>
     OTHER       =>  2,
 );
 
-# File IO 
+# File IO / Flags
 my $logOpen = 0; # Flag to determine if log file has been opened
 my $logFile; # Log file descriptor, used in multiple functions
 my $csvOpen = 0; # Flag as above
 my $csvFile; # CSV file descriptor, used for output
 my $serialPort; # Serial port file descriptor, used for input
+my $savedData = FALSE; # Indicates if we have saved data for the hour yet
 
 # Updates and Idle Mode
 my $updateAvailable = 0; # Update flag
@@ -85,6 +86,7 @@ my $previousEvent = $PARSER_EVENTS{OTHER}; # Track the previous event, used for 
 my $previousEventTime = "0"; # Stores the time of the previous event (in  a string)
 my $currentEvent = $PARSER_EVENTS{OTHER}; # Tracks the current type of data being parsed
 my $currentEventTime = "0"; # Store the time of the current event (in a string)
+my $currentEventHour = "0"; # Just the hour portion of the current event time
 my $transactionCount = 1; # Counter for number of transactions per hour / day
 
 # This data structure holds data for each of the columns which will eventually comprise the CSV file
@@ -360,6 +362,24 @@ sub postUpdate
     return;
 }
 
+# This function manages the saving of hourly data to persistent storage
+# It sets the last transaction time, generates the CSV data
+# and clears data structures 
+sub saveData
+{
+    # Set the last transaction time
+    $hourlyTransactionData{"Last Transaction"} = $previousEventTime;
+
+    # Write the collected data to the CSV file and clear the data structure
+    logMsg("Generating CSV for " . $hourlyTransactionData{"Hours"});
+    generateCSV();
+    clearData();
+
+    $savedData = TRUE;
+
+    return;
+}
+
 # This function is part of the parser, it processes headers
 # Each header represents a separate event (transaction or report) and includes a 
 # timestamp which is extracted and stored for later use
@@ -385,25 +405,23 @@ sub parseHeader
         # Keep track of the previous event time if there is one, ignoring reports
         if ($currentEventTime ne "0" and $currentEvent != $PARSER_EVENTS{OTHER})
         {
-            # Used to set the last transaction time per hour
+            # Used to set the last transaction time for each hour
             $previousEventTime = $currentEventTime;
         }
 
-        $currentEventTime = $1;
-        my $currentEventHour = substr($currentEventTime, 0, 2);
+        $currentEventTime = $1; 
+        $currentEventHour = substr($currentEventTime, 0, 2);
 
         # When we have finished gathering data for the hour, we need to take it and write it out to the CSV file
-
-        # If the current hour is different to the hour of the most recent transaction and this is not the beginning of the day
-        if ($currentEventHour ne substr($hourlyTransactionData{"Hours"}, 0, 2) and $hourlyTransactionData{"Hours"} ne "0")
+        # If we are debugging, we use the hours in the serial headers to indicate the current hour 
+        # so we don't have to wait until the actual hour changes to generate CSV data 
+        if ($DEBUG_ENABLED)
         {
-            # Set the last transaction time
-            $hourlyTransactionData{"Last Transaction"} = $previousEventTime;
-
-            # Write the collected data to the CSV file and clear the data structure
-            logMsg("Generating CSV for " . $hourlyTransactionData{"Hours"});
-            generateCSV();
-            clearData();
+            # If the current hour is different to the hour of the most recent transaction and this is not the beginning of the day
+            if ($currentEventHour ne substr($hourlyTransactionData{"Hours"}, 0, 2) and $hourlyTransactionData{"Hours"} ne "0")
+            {
+                saveData(); 
+            }
         }
 
         # If no first transaction has been logged for the current hour
@@ -418,7 +436,7 @@ sub parseHeader
         }
     }
 
-    if ($DEBUG_ENABLED)
+    if ($VERBOSE_PARSER_ENABLED)
     {
         print "HEADER AT $currentEventTime\n";
     }
@@ -473,7 +491,7 @@ sub parseTransaction
 
     else
     {
-        if ($DEBUG_ENABLED)
+        if ($VERBOSE_PARSER_ENABLED)
         {
             print "\tITEM FOR TRANSACTION $transactionCount\n";
         }
@@ -524,7 +542,7 @@ sub parseLine
     # Ignore any settings or debugging information on the printout 
     elsif ($dataLine =~/=/x and $currentEvent != $PARSER_EVENTS{OTHER}) 
     {
-        logMsg("Ignoring diagnostic output");
+        logMsg("Ignoring diagnostic output: $dataLine");
         $currentEvent = $PARSER_EVENTS{OTHER};
         return;
     }
@@ -540,7 +558,7 @@ sub parseLine
         {
             $transactionCount++;
 
-            if ($DEBUG_ENABLED)
+            if ($VERBOSE_PARSER_ENABLED)
             {
                 print Dumper(\%hourlyTransactionData);
             }
@@ -595,8 +613,9 @@ sub clearData
         $hourlyTransactionData{$key} = "0";
     }
 
-    # Reset the hourly transaction count
+    # Reset counts and flags
     $transactionCount = 0;
+    $savedData = FALSE;
 
     return;
 }
@@ -777,6 +796,22 @@ sub processData
             {
                 # Parse the line of data
                 parseLine($serialDataLine);
+            }
+            
+            # If we are not in debug mode we will check the system clock 
+            # rather than the time in the headers of the serial data
+            # This ensures new data is saved every hour regardless of input
+            if (!$DEBUG_ENABLED)
+            {
+                my (undef, undef, $currentHour) = localtime();
+
+                if ($currentEventHour ne "0" and $currentEventHour ne $currentHour)
+                {
+                    if (!$savedData)
+                    {
+                        saveData();
+                    }
+                }
             }
 
             $storeIsOpen = isBusinessHours();
