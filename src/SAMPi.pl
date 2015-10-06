@@ -23,6 +23,7 @@ use warnings;
 use constant::boolean; # Defines TRUE and FALSE values as Perl lacks an explicit boolean type
 use Readonly; # Allows read-only constants
 use Carp; # Provides alternative warn and die functions
+use Data::Dumper; # Allows printing transaction data to screen for debugging
 
 use Sys::RunAlone; # This module ensures only one instance of this software runs concurrently
 use Sys::Hostname; # Acquire hostname 
@@ -46,7 +47,7 @@ use Cwd qw(abs_path); # Get absolute path of currently executing script
 Readonly our $VERSION => 0.7;
 Readonly my $LOGGING_ENABLED => TRUE; # Enable or disable logging to file
 Readonly my $UPDATE_HOOK_ENABLED => FALSE; # Attempt to call the postUpdate() function once on start if TRUE
-Readonly my $DEBUG_ENABLED => FALSE; # If enabled, the parser will print information as it runs
+Readonly my $DEBUG_ENABLED => TRUE; # If enabled, the parser will print information as it runs
 
 Readonly my $DIRECTORY_SEPARATOR => ($^O=~/Win/) ? "\\" : "/"; # Ternary operator used for brevity
 Readonly my $CURRENT_VERSION_PATH => abs_path($0);
@@ -491,6 +492,11 @@ sub parseLine
         {
             $transactionCount++;
             $hourlyTransactionData{"Customer Count"} = $transactionCount;
+
+            if ($DEBUG_ENABLED)
+            {
+                print Dumper(\%hourlyTransactionData);
+            }
         }
 
         # If the line contains a price we are parsing a transaction
