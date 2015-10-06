@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 #
-# SAMPi - SAM4S ECR data reader, parser and logger (Last Modified 04/10/2015)
+# SAMPi - SAM4S ECR data reader, parser and logger (Last Modified 06/10/2015)
 #
 # This software runs in the background on a suitably configured Raspberry Pi,
 # reads from a connected SAM4S ECR via serial connection, extracts various data,
@@ -44,10 +44,10 @@ use Cwd qw(abs_path); # Get absolute path of currently executing script
 
 # Globally accessible constants and variables #
 
-Readonly our $VERSION => 0.7;
+Readonly our $VERSION => 0.7.5;
 Readonly my $LOGGING_ENABLED => TRUE; # Enable or disable logging to file
 Readonly my $UPDATE_HOOK_ENABLED => FALSE; # Attempt to call the postUpdate() function once on start if TRUE
-Readonly my $DEBUG_ENABLED => TRUE; # If enabled, the parser will print information as it runs
+Readonly my $DEBUG_ENABLED => FALSE; # If enabled, the parser will print information as it runs and read the time from file
 
 Readonly my $DIRECTORY_SEPARATOR => ($^O=~/Win/) ? "\\" : "/"; # Ternary operator used for brevity
 Readonly my $CURRENT_VERSION_PATH => abs_path($0);
@@ -102,16 +102,19 @@ tie %hourlyTransactionData, "Tie::IxHash";
     "Hot Food"          => "0",
     "Cold Takeaway"     => "0",
     "Meal Deal"         => "0",
-    "Drinks"            => "0",
-    "Crisps"            => "0",
-    "Bread & Rolls"     => "0",
+    "Drinks & Crisps"   => "0",
+    "Bread"             => "0",
     "Cakes"             => "0",
     "Celebration Cake"  => "0",
-    "Party Platters"    => "0",
+    "Party Platter"     => "0",
+    "Carrier Bag"       => "0",
     "Customer Count"    => "0",
     "First Transaction" => "0",
     "Last Transaction"  => "0"
 );
+
+# Copy for reverting to if required
+my %hourlyTransactionDataCopy;
 
 # Functions #
 
@@ -428,6 +431,7 @@ sub parseHeader
 # Each transaction is part of a group and contains the PLU and price for one or more 
 # items. These are processed as key-value pairs with consideration for lines that
 # do not represent PLUs (e.g. totals or payment method listings)
+## no critic qw(ProhibitCascadingIfElse)
 sub parseTransaction
 {
     my ($transactionLine) = @_;
@@ -437,7 +441,7 @@ sub parseTransaction
     # Separate the data into a key (PLU) and a value (price) to use as input for the second-stage parser
     my ($transactionKey, $transactionValue) = split('£', $transactionLine, 2);
 
-    # Treat the "TOTAL" line differently to a standard transaction line
+    # If we read a 'TOTAL' line
     if (index($transactionKey, "TOTAL") != -1)
     {
         # Add to the hourly total 
@@ -445,11 +449,26 @@ sub parseTransaction
         return;
     }
 
-    # Same for the 'CASH' line
+    # Handle the 'CASH' total
     elsif (index($transactionKey, "CASH") != -1)
     {
         # Add to the hourly total for cash payments
         $hourlyTransactionData{"Cash"} += $transactionValue;
+        return;
+    }
+
+    # Do not include money given back as change in the amount of cash taken in
+    elsif(index($transactionKey, "CHANGE") != -1)
+    {
+        $hourlyTransactionData{"Cash"} = $hourlyTransactionData{"Cash"} - $transactionValue;
+        return;
+    }
+
+    # Handle 'CHEQUE' lines, currently used for card payments
+    elsif(index($transactionKey, "CHEQUE") != -1)
+    {
+        # Add to the hourly total for card payments
+        $hourlyTransactionData{"Credit Cards"} = $transactionValue;
         return;
     }
 
@@ -460,7 +479,7 @@ sub parseTransaction
             print "\tITEM FOR TRANSACTION $transactionCount\n";
         }
 
-        # For regular transactions, add to the total for that type of product
+        # For regular transactions, add to the total for that category
         rtrim($transactionKey); # Remove any trailing spaces
         $hourlyTransactionData{$transactionKey} += $transactionValue; # Add to the appropriate column in the data
 
@@ -474,8 +493,9 @@ sub parseLine
     # The line of data passed in as a parameter will be accessible as $dataLine
     my ($dataLine) = @_;
 
-    # Replace any 0x9c hex values returned by the serial port with a GBP currency symbol
+    # Replace any 0x9c hex values or question marks returned by the serial port with a GBP currency symbol
     $dataLine =~ s/\x{9c}/£/gx;
+    $dataLine =~s/\?/£/gx;
 
     # If the line begins with a date in dd/mm/yyyy format, it is a header
     if ($dataLine =~ /^[0-9][0-9]\/[0-9][0-9]\/[0-9][0-9][0-9][0-9]/x)
@@ -484,13 +504,32 @@ sub parseLine
         return;
     }
 
+    # Handle cancelled transactions
+    elsif ($dataLine =~ /^CANCEL/x)
+    {
+        # Reset the state of the hourly transaction data to how it was before the current transaction
+        logMsg("Ignoring cancelled transaction at $currentEventTime");
+        %hourlyTransactionData = %hourlyTransactionDataCopy;
+        return;
+    }
+
+    # Ignore refunds for now, we aren't tracking them
+    elsif ($dataLine =~/^PAID\sOUT/x and $currentEvent != $PARSER_EVENTS{UNKNOWN})
+    {
+        logMsg("SAMPi does not currently implement refund tracking, ignoring");
+        $currentEvent = $PARSER_EVENTS{UNKNOWN};
+        return;
+    }
+
     # Process the first line after a header
     if ($currentEvent == $PARSER_EVENTS{HEADER})
     {
+        # Make a copy of the current transaction data so we can revert if requried
+        %hourlyTransactionDataCopy = %hourlyTransactionData;
+
         # Increment number of transactions if we have just processed one
         if ($previousEvent == $PARSER_EVENTS{TRANSACTION})
         {
-            $transactionCount++;
             $hourlyTransactionData{"Customer Count"} = $transactionCount;
 
             if ($DEBUG_ENABLED)
@@ -499,7 +538,7 @@ sub parseLine
             }
         }
 
-        # If the line contains a price we are parsing a transaction
+        # If the line contains a price, we are parsing a transaction
         if (index($dataLine, '£') != -1)
         {
             (my $PLU, undef) = split ('£', $dataLine, 2); # Extract the PLU
@@ -514,7 +553,7 @@ sub parseLine
 
             else
             {
-                logMsg("$PLU not recognised, not storing\n");
+                logMsg("$PLU not recognised, not storing");
             }
 
             return;
@@ -567,11 +606,6 @@ sub generateCSV
     {
         initialiseOutputFile();
     }
-
-    # Calculate amount spent on cards (TOTAL - CASH)
-    $hourlyTransactionData{"Credit Cards"} = 
-        $hourlyTransactionData{"Total Takings"} -
-        $hourlyTransactionData{"Cash"};
 
     # Iterate through the hourly transaction data
     while (my ($transactionKey, $transactionData) = each %hourlyTransactionData)
