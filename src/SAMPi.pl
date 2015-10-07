@@ -28,11 +28,11 @@ use Data::Dumper; # Allows printing transaction data to screen for debugging
 use Sys::RunAlone; # This module ensures only one instance of this software runs concurrently
 use Sys::Hostname; # Acquire hostname 
 use Device::SerialPort; # Serial IO library 
+use Tie::IxHash; # Preserve the insertion order of hashes
+use Text::Trim; # Remove leading and trailing whitespace
 use LWP::Simple qw(getstore is_error $ua); # Used to download updates
 use Digest::SHA1 qw(sha1_base64); # SHA1 checksum library
 use Time::HiRes qw(sleep); # Allows sleeping for less than a second
-use Tie::IxHash; # Preserve the insertion order of hashes
-use Text::Trim; # Remove leading and trailing whitespace
 
 use File::Spec qw(tmpdir updir); # Used to get portable directory paths
 use File::Compare; # Compare currently running script and downloaded script
@@ -43,7 +43,7 @@ use Cwd qw(abs_path); # Get absolute path of currently executing script
 
 # Globally accessible constants and variables #
 
-Readonly our $VERSION => 0.75;
+Readonly our $VERSION => 0.76;
 
 Readonly my $LOGGING_ENABLED        => TRUE; # Enable or disable logging to file
 Readonly my $UPDATE_HOOK_ENABLED    => FALSE; # Attempt to call the postUpdate() function once on start if TRUE
@@ -88,11 +88,27 @@ my $currentEventTime = "0"; # Store the time of the current event (in a string)
 my $currentEventHour = "0"; # Just the hour portion of the current event time
 my $transactionCount = 1; # Counter for number of transactions per hour / day
 
-# This data structure holds data for each of the columns which will eventually comprise the CSV file
-# We store transactions as we read them, make calculations from this data and convert it to CSV hourly
-my %hourlyTransactionData;
+# The following hash is the list of recognised PLUs, in the future these could be read in from a file
+# We tie this hash to preserve the insertion order for later use in CSV columns, saves front-end work
+my %PLUList;
+tie %PLUList, "Tie::IxHash";
+%PLUList = 
+(
+    "Hot Food"         => "0",
+    "Cold Takeaway"    => "0",
+    "Meal Deal"        => "0",
+    "Drinks & Crisps"  => "0",
+    "Bread & Rolls"    => "0",
+    "Cakes"            => "0",
+    "Celebration Cake" => "0",
+    "Party Platter"    => "0",
+    "Carrier Bag"      => "0"
+);
 
-# Tie this hash to preserve insertion order for use as CSV column headings
+# The following data structure holds data for each of the columns that will eventually comprise the CSV file
+# We store transactions as we read them, make calculations from this data and convert it to CSV once hourly
+# This hash is tied for the same reason as the PLU list.
+my %hourlyTransactionData;
 tie %hourlyTransactionData, "Tie::IxHash";
 
 # Initial values are set to zero
@@ -102,15 +118,7 @@ tie %hourlyTransactionData, "Tie::IxHash";
     "Total Takings"     => "0",
     "Cash"              => "0",
     "Credit Cards"      => "0",
-    "Hot Food"          => "0",
-    "Cold Takeaway"     => "0",
-    "Meal Deal"         => "0",
-    "Drinks & Crisps"   => "0",
-    "Bread & Rolls"     => "0",
-    "Cakes"             => "0",
-    "Celebration Cake"  => "0",
-    "Party Platter"     => "0",
-    "Carrier Bag"       => "0",
+    "PLU"               => \%PLUList,
     "Customer Count"    => "0",
     "First Transaction" => "0",
     "Last Transaction"  => "0"
@@ -474,14 +482,14 @@ sub parseTransaction
     }
 
     # Do not include money given back as change in the amount of cash taken in
-    elsif(index($transactionKey, "CHANGE") != -1)
+    elsif (index($transactionKey, "CHANGE") != -1)
     {
         $hourlyTransactionData{"Cash"} = $hourlyTransactionData{"Cash"} - $transactionValue;
         return;
     }
 
     # Handle 'CHEQUE' lines, currently used for card payments
-    elsif(index($transactionKey, "CHEQUE") != -1)
+    elsif (index($transactionKey, "CHEQUE") != -1)
     {
         # Add to the hourly total for card payments
         $hourlyTransactionData{"Credit Cards"} = $transactionValue;
@@ -492,12 +500,14 @@ sub parseTransaction
     {
         # For regular transactions, do some validation and then add 
         # to the total for that PLU / product category 
+        
         trim($transactionKey); # Remove leading and trailing spaces
 
         # Ensure the PLU / key matches one of the expected categories
-        if (exists ($hourlyTransactionData{$transactionKey}))
+        if (exists($PLUList{$transactionKey}))
         {
-            $hourlyTransactionData{$transactionKey} += $transactionValue; # Add to the appropriate column in the data
+            # Add to the appropriate column in the data
+            $hourlyTransactionData{"PLU"}{$transactionKey} += $transactionValue; 
         }
 
         else
@@ -601,11 +611,24 @@ sub parseLine
 # This function resets the hourlyTransactionData hash to ready it for another hour of data
 sub clearData
 {
-    # Iterate over the hash
+    # Iterate over the transaction data hash
     foreach my $key (keys %hourlyTransactionData)
     {
-        # Reset each value
-        $hourlyTransactionData{$key} = "0";
+        # Iterate over the nested PLU hash
+        if ($key eq "PLU")
+        {
+            foreach my $PLU (keys %{ $hourlyTransactionData{$key} })
+            {
+                # Reset the total for each PLU
+                $hourlyTransactionData{$key}{$PLU} = "0";
+            }
+        }
+
+        else
+        {
+            # Reset other values
+            $hourlyTransactionData{$key} = "0";
+        }
     }
 
     # Reset counts and flags
@@ -628,9 +651,21 @@ sub generateCSV
     $hourlyTransactionData{"Customer Count"} = $transactionCount;
 
     # Iterate through the hourly transaction data
-    while (my ($transactionKey, $transactionData) = each %hourlyTransactionData)
+    while (my ($transactionDataKey, $transactionData) = each %hourlyTransactionData)
     {
-        if ($transactionKey ne "Last Transaction")
+        # Process PLU totals
+        if ($transactionDataKey eq "PLU")
+        {
+            # Iterate over the nested hash and extract the saved data
+            foreach my $PLU (keys %{ $hourlyTransactionData{$transactionDataKey} })
+            {
+                $transactionData = $hourlyTransactionData{$transactionDataKey}{$PLU};
+                print $csvFile "$transactionData,";
+            }
+        }
+
+        # Process other values
+        if ($transactionDataKey ne "Last Transaction")
         {
             # Write comma separated values to the file
             print $csvFile "$transactionData,";
@@ -736,7 +771,20 @@ sub initialiseOutputFile
         # Define the headings for the output file, these match the keys defined in the hourlyTransactionData hash
         foreach my $key (keys %hourlyTransactionData)
         {
-            push(@csvHeadings, $key); # First argument is array, second is value to push
+            # PLU column names are listed in the PLUList structure
+            if ($key eq "PLU")
+            {
+                foreach my $PLU (keys %PLUList)
+                {
+                    # Extract them and push them on to our array
+                    push(@csvHeadings, $PLU);
+                }
+            }
+
+            else
+            {
+                push(@csvHeadings, $key); 
+            }
         }
 
         # Write the headings to the file
