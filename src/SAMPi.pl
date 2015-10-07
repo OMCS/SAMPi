@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 #
-# SAMPi - SAM4S ECR data reader, parser and logger (Last Modified 07/10/2015)
+# SAMPi - SAM4S ECR data reader, parser and logger (Last Modified 08/10/2015)
 #
 # This software runs in the background on a suitably configured Raspberry Pi,
 # reads from a connected SAM4S ECR via serial connection, extracts various data,
@@ -488,8 +488,8 @@ sub parseTransaction
         return;
     }
 
-    # Handle 'CHEQUE' lines, currently used for card payments
-    elsif (index($transactionKey, "CHEQUE") != -1)
+    # Handle "CHEQUE" lines currently signifying card payments, also handle "CARD"
+    elsif (index($transactionKey, "CHEQUE") != -1 or $transactionKey =~ /^CARD/x)
     {
         # Add to the hourly total for card payments
         $hourlyTransactionData{"Credit Cards"} = $transactionValue;
@@ -731,9 +731,10 @@ sub getOutputFileName
         $shopName        = normalise($shopName);
         $currentHostname = normalise($currentHostname);
 
+        # Check if the hostname contains the shop name
         if ($currentHostname =~ /$shopName/x)
         {
-             $matchedID = $shopID;
+            $matchedID = $shopID;
         }
     }
 
@@ -744,6 +745,13 @@ sub getOutputFileName
     {
         $matchedID = "UNKNOWN";
         logMsg("No match found for '$currentHostname' in shops.csv, setting \$matchedID to 'UNKNOWN'");
+    }
+
+    # Otherwise, check if this is a store with multiple ECR units and append to the filename to avoid conflicts if so
+    elsif ($currentHostname =~ /([0-9])/x)
+    {
+        # This relies on the hostname having a number appended to it and no one-till stores having numbers in their hostname
+        $matchedID .= "_$1";
     }
 
     # Set the filename in the format "yyyymmdd_matchedID.csv"
