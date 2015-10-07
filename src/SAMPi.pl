@@ -4,7 +4,7 @@
 #
 # This software runs in the background on a suitably configured Raspberry Pi,
 # reads from a connected SAM4S ECR via serial connection, extracts various data,
-# puts it into CSV format and stores it in preparation for upload via SFTP
+# puts it into CSV format and stores it in preparation for upload via (s)rysnc
 #
 # This software works in conjunction with the SAMPiD daemon to
 # handle uploading CSV data files, removal of data older than 
@@ -20,7 +20,7 @@ use warnings;
 
 # Imported Modules #
 
-use constant::boolean; # Defines TRUE and FALSE values as Perl lacks an explicit boolean type
+use constant::boolean; # Defines TRUE and FALSE constants, Perl lacks an explicit boolean type
 use Readonly; # Allows read-only constants
 use Carp; # Provides alternative warn and die functions
 use Data::Dumper; # Allows printing transaction data to screen for debugging
@@ -39,7 +39,6 @@ use File::Compare; # Compare currently running script and downloaded script
 use File::Touch; # Perl implementation of the UNIX 'touch' command
 use File::Copy; # Provides the copy function
 use File::Basename; # Get directory of currently executing script
-use Scalar::Util qw(openhandle); # Test if file handle is open
 use Cwd qw(abs_path); # Get absolute path of currently executing script
 
 # Globally accessible constants and variables #
@@ -107,7 +106,7 @@ tie %hourlyTransactionData, "Tie::IxHash";
     "Cold Takeaway"     => "0",
     "Meal Deal"         => "0",
     "Drinks & Crisps"   => "0",
-    "Bread"             => "0",
+    "Bread & Rolls"     => "0",
     "Cakes"             => "0",
     "Celebration Cake"  => "0",
     "Party Platter"     => "0",
@@ -491,14 +490,25 @@ sub parseTransaction
 
     else
     {
+        # For regular transactions, do some validation and then add 
+        # to the total for that PLU / product category 
+        trim($transactionKey); # Remove leading and trailing spaces
+
+        # Ensure the PLU / key matches one of the expected categories
+        if (exists ($hourlyTransactionData{$transactionKey}))
+        {
+            $hourlyTransactionData{$transactionKey} += $transactionValue; # Add to the appropriate column in the data
+        }
+
+        else
+        {
+            logMsg("\"$transactionKey\" is not a valid PLU, ignoring");
+        }
+
         if ($VERBOSE_PARSER_ENABLED)
         {
             print "\tITEM FOR TRANSACTION $transactionCount\n";
         }
-
-        # For regular transactions, add to the total for that category
-        rtrim($transactionKey); # Remove any trailing spaces
-        $hourlyTransactionData{$transactionKey} += $transactionValue; # Add to the appropriate column in the data
 
         return;
     }
@@ -521,11 +531,11 @@ sub parseLine
         return;
     }
 
-    # Handle cancelled transactions
-    elsif ($dataLine =~ /^CANCEL/x)
+    # Handle cancelled and reprinted transactions
+    elsif ($dataLine =~ /^CANCEL/x or $dataLine =~ /REPRINT/x)
     {
         # Reset the state of the hourly transaction data to how it was before the current transaction
-        logMsg("Ignoring cancelled transaction at $currentEventTime");
+        logMsg("Ignoring cancelled or reprinted transaction at $currentEventTime");
         %hourlyTransactionData = %hourlyTransactionDataCopy;
         $transactionCount--;
         return;
@@ -564,25 +574,10 @@ sub parseLine
             }
         }
 
-        # If the line contains a price, we are parsing a transaction
+        # If the line contains a price, prepare to process a transaction
         if (index($dataLine, '£') != -1)
         {
-            (my $PLU, undef) = split ('£', $dataLine, 2); # Extract the PLU
-
-            trim($PLU); # Remove leading and trailing spaces
-
-            # Ensure the PLU / key matches one of the expected categories
-            if (exists ($hourlyTransactionData{$PLU}))
-            {
-                parseTransaction($dataLine);
-            }
-
-            else
-            {
-                logMsg("\"$PLU\" not recognised, ignoring");
-            }
-
-            return;
+                $currentEvent = $PARSER_EVENTS{TRANSACTION};
         }
 
         # If the line matches a report, ignore it until the next header
@@ -590,13 +585,13 @@ sub parseLine
         # data from individual transactions, this may change in future
         if (index($dataLine, 'REPORT') != -1)
         {
-            $currentEvent  = $PARSER_EVENTS{OTHER};
+            $currentEvent = $PARSER_EVENTS{OTHER};
             return;
         }
     }
 
     # Ensure the line we are operating on matches a transaction
-    elsif ($currentEvent == $PARSER_EVENTS{TRANSACTION} and index($dataLine, '£') != -1)
+    if ($currentEvent == $PARSER_EVENTS{TRANSACTION} and index($dataLine, '£') != -1)
     {
         parseTransaction($dataLine);
         return;
