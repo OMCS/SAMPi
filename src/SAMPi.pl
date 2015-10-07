@@ -20,11 +20,13 @@ use warnings;
 
 # Imported Modules #
 
+# Meta
 use constant::boolean; # Defines TRUE and FALSE constants, Perl lacks an explicit boolean type
 use Readonly; # Allows read-only constants
 use Carp; # Provides alternative warn and die functions
 use Data::Dumper; # Allows printing transaction data to screen for debugging
 
+# Misc
 use Sys::RunAlone; # This module ensures only one instance of this software runs concurrently
 use Sys::Hostname; # Acquire hostname 
 use Device::SerialPort; # Serial IO library 
@@ -33,7 +35,9 @@ use Text::Trim; # Remove leading and trailing whitespace
 use LWP::Simple qw(getstore is_error $ua); # Used to download updates
 use Digest::SHA1 qw(sha1_base64); # SHA1 checksum library
 use Time::HiRes qw(sleep); # Allows sleeping for less than a second
+use Clone qw(clone); # Allows deep copying of nested hashes
 
+# File I/O
 use File::Spec qw(tmpdir updir); # Used to get portable directory paths
 use File::Compare; # Compare currently running script and downloaded script
 use File::Touch; # Perl implementation of the UNIX 'touch' command
@@ -542,12 +546,13 @@ sub parseLine
     }
 
     # Handle cancelled and reprinted transactions
-    elsif ($dataLine =~ /^CANCEL/x or $dataLine =~ /REPRINT/x)
+    elsif ( ($dataLine =~ /^CANCEL/x or $dataLine =~ /REPRINT/x) and $currentEvent != $PARSER_EVENTS{OTHER} )
     {
         # Reset the state of the hourly transaction data to how it was before the current transaction
         logMsg("Ignoring cancelled or reprinted transaction at $currentEventTime");
         %hourlyTransactionData = %hourlyTransactionDataCopy;
         $transactionCount--;
+        $currentEvent = $PARSER_EVENTS{OTHER};
         return;
     }
 
@@ -571,7 +576,7 @@ sub parseLine
     if ($currentEvent == $PARSER_EVENTS{HEADER})
     {
         # Make a copy of the current transaction data so we can revert if requried
-        %hourlyTransactionDataCopy = %hourlyTransactionData;
+        %hourlyTransactionDataCopy = %{ clone(\%hourlyTransactionData) };
 
         # Increment number of transactions if we have just processed one
         if ($previousEvent == $PARSER_EVENTS{TRANSACTION})
@@ -665,7 +670,7 @@ sub generateCSV
         }
 
         # Process other values
-        if ($transactionDataKey ne "Last Transaction")
+        elsif ($transactionDataKey ne "Last Transaction")
         {
             # Write comma separated values to the file
             print $csvFile "$transactionData,";
