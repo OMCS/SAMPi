@@ -203,7 +203,7 @@ sub logMsg
 sub initialiseSerialPort
 {
     # 8N1 with software flow control by default
-    Readonly my $SERIAL_PORT => ($^O=~/Linux/) ? "/dev/ttyUSB0" : "/dev/ttys005"; # This varies depending on current OS
+    Readonly my $SERIAL_PORT => ($^O=~/Linux/) ? "/dev/ttyUSB0" : "/dev/ttys004"; # This varies depending on current OS
     Readonly my $BPS => 9600;
     Readonly my $DATA_BITS => 8;
     Readonly my $STOP_BITS => 1;
