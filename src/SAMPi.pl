@@ -45,7 +45,7 @@ use File::Copy; # Provides the copy function
 use File::Basename; # Get directory of currently executing script
 use Cwd qw(abs_path); # Get absolute path of currently executing script
 
-# Globally accessible constants and variables #
+# Globally accessible constants and variables TRUE
 
 Readonly our $VERSION => 0.76;
 
@@ -90,7 +90,7 @@ my $previousEventTime = "0"; # Stores the time of the previous event (in  a stri
 my $currentEvent = $PARSER_EVENTS{OTHER}; # Tracks the current type of data being parsed
 my $currentEventTime = "0"; # Store the time of the current event (in a string)
 my $currentEventHour = "0"; # Just the hour portion of the current event time
-my $transactionCount = 1; # Counter for number of transactions per hour / day
+my $transactionCount = 0; # Counter for number of transactions per hour / day
 
 # The following hash is the list of recognised PLUs, in the future these could be read in from a file
 # We tie this hash to preserve the insertion order for later use in CSV columns, saves front-end work
@@ -125,7 +125,8 @@ tie %hourlyTransactionData, "Tie::IxHash";
     "PLU"               => \%PLUList,
     "Customer Count"    => "0",
     "First Transaction" => "0",
-    "Last Transaction"  => "0"
+    "Last Transaction"  => "0",
+    "No Sale"           => "0"
 );
 
 # Copy for reverting to if required
@@ -260,7 +261,7 @@ sub isBusinessHours
             }
 
             clearData(); # Clear the stored data
-            $transactionCount = 1; # Reset the daily transaction count
+            $transactionCount = 0; # Reset the daily transaction count
             $idleMode = TRUE;
         }
 
@@ -447,6 +448,9 @@ sub parseHeader
         }
     }
 
+    # Update customer (transaction) count in the hourly data structure
+    $hourlyTransactionData{"Customer Count"} = $transactionCount;
+
     if ($VERBOSE_PARSER_ENABLED)
     {
         print "HEADER AT $currentEventTime\n";
@@ -474,6 +478,10 @@ sub parseTransaction
     {
         # Add to the hourly total 
         $hourlyTransactionData{"Total Takings"} += $transactionValue;
+
+        # Increment the transaction total, can decrement later if we read a cancel
+        # or a reprint
+        $transactionCount++;
         return;
     }
 
@@ -496,7 +504,15 @@ sub parseTransaction
     elsif (index($transactionKey, "CHEQUE") != -1 or $transactionKey =~ /^CARD/x)
     {
         # Add to the hourly total for card payments
-        $hourlyTransactionData{"Credit Cards"} = $transactionValue;
+        $hourlyTransactionData{"Credit Cards"} += $transactionValue;
+        return;
+    }
+
+    # Keep track of "NO SALE" lines, from people opening the till without processing a transaction
+    elsif (index($transactionKey, "NOSALE") != -1)
+    {
+        logMsg("Till opened but no transaction processed at $currentEventTime");   
+        $hourlyTransactionData{"No Sale"}++;
         return;
     }
 
@@ -506,6 +522,7 @@ sub parseTransaction
         # to the total for that PLU / product category 
         
         trim($transactionKey); # Remove leading and trailing spaces
+        $transactionKey =~ s/(\w+)/\u\L$1/gx; # Normalise PLU case to 'Title Case'
 
         # Ensure the PLU / key matches one of the expected categories
         if (exists($PLUList{$transactionKey}))
@@ -534,12 +551,20 @@ sub parseLine
     # The line of data passed in as a parameter will be accessible as $dataLine
     my ($dataLine) = @_;
 
-    # Replace any 0x9c hex values or question marks returned by the serial port with a GBP currency symbol
+    # Replace any 0xc2 and 0x9c hex values, question marks or nulls returned by the serial port
+    $dataLine =~ s/\x{c2}//gx;
     $dataLine =~ s/\x{9c}/£/gx;
     $dataLine =~s/\?/£/gx;
+    $dataLine =~ s/\x{00}//gx;
 
-    # If the line begins with a date in dd/mm/yyyy format, it is a header
-    if ($dataLine =~ /^[0-9][0-9]\/[0-9][0-9]\/[0-9][0-9][0-9][0-9]/x)
+    # Set previous event correctly for reports
+    if ($currentEvent == $PARSER_EVENTS{OTHER})
+    {
+        $previousEvent = $PARSER_EVENTS{OTHER};
+    }
+
+    # If the line starts with a date in dd/mm/yyyy format, it is a header
+    if ($dataLine =~ /^\d{1,2}\/\d{2}\/\d{4}/x)
     {
         parseHeader($dataLine); # This will set $currentEvent to $HEADER
         return;
@@ -552,6 +577,7 @@ sub parseLine
         logMsg("Ignoring cancelled or reprinted transaction at $currentEventTime");
         %hourlyTransactionData = %hourlyTransactionDataCopy;
         $transactionCount--;
+        $hourlyTransactionData{"Customer Count"} = $transactionCount;
         $currentEvent = $PARSER_EVENTS{OTHER};
         return;
     }
@@ -578,21 +604,13 @@ sub parseLine
         # Make a copy of the current transaction data so we can revert if requried
         %hourlyTransactionDataCopy = %{ clone(\%hourlyTransactionData) };
 
-        # Increment number of transactions if we have just processed one
+        # Print out the most recently processed transaction if we are debugging
         if ($previousEvent == $PARSER_EVENTS{TRANSACTION})
         {
-            $transactionCount++;
-
             if ($VERBOSE_PARSER_ENABLED)
             {
                 print Dumper(\%hourlyTransactionData);
             }
-        }
-
-        # If the line contains a price, prepare to process a transaction
-        if (index($dataLine, '£') != -1)
-        {
-                $currentEvent = $PARSER_EVENTS{TRANSACTION};
         }
 
         # If the line matches a report, ignore it until the next header
@@ -600,8 +618,18 @@ sub parseLine
         # data from individual transactions, this may change in future
         if (index($dataLine, 'REPORT') != -1)
         {
+            if ($VERBOSE_PARSER_ENABLED)
+            {
+                print "Ignoring report at $currentEventTime\n";
+            }
+
             $currentEvent = $PARSER_EVENTS{OTHER};
-            return;
+        }
+
+        # If the line isn't a report and contains a price, prepare to process a transaction
+        if (index($dataLine, '£') != -1 and $currentEvent != $PARSER_EVENTS{OTHER})
+        {
+            $currentEvent = $PARSER_EVENTS{TRANSACTION};
         }
     }
 
@@ -653,6 +681,13 @@ sub generateCSV
         initialiseOutputFile();
     }
 
+    # Sanity check, do not generate a row of CSV if there were no transactions
+    if ($hourlyTransactionData{"Total Takings"} eq "0")
+    {
+        logMsg("No transactions read for " . $hourlyTransactionData{"Hours"} . ", discarding CSV"); 
+        return;
+    }
+
     $hourlyTransactionData{"Customer Count"} = $transactionCount;
 
     # Iterate through the hourly transaction data
@@ -670,7 +705,7 @@ sub generateCSV
         }
 
         # Process other values
-        elsif ($transactionDataKey ne "Last Transaction")
+        elsif ($transactionDataKey ne "No Sale")
         {
             # Write comma separated values to the file
             print $csvFile "$transactionData,";
