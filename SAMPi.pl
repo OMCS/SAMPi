@@ -24,25 +24,25 @@ use warnings;
 use constant::boolean; # Defines TRUE and FALSE constants, Perl lacks an explicit boolean type
 use Readonly; # Allows read-only constants
 use Carp; # Provides alternative warn and die functions
-use Data::Dumper; # Allows printing transaction data to screen for debugging
 
 # Misc
 use Sys::RunAlone; # This module ensures only one instance of this software runs concurrently
 use Sys::Hostname; # Acquire hostname 
-use Device::SerialPort; # Serial IO library 
+use Device::SerialPort; # Serial I/O 
 use Tie::IxHash; # Preserve the insertion order of hashes
 use Text::Trim; # Remove leading and trailing whitespace
 use LWP::Simple qw(getstore is_error $ua); # Used to download updates
 use Digest::SHA1 qw(sha1_base64); # SHA1 checksum library
 use Time::HiRes qw(sleep); # Allows sleeping for less than a second
 use Clone qw(clone); # Allows deep copying of nested hashes
+use Data::Dumper; # Allows printing transaction data to screen for debugging
 
 # File I/O
-use File::Spec qw(tmpdir updir); # Used to get portable directory paths
+use File::Basename; # Provides the dirname() function
 use File::Compare; # Compare currently running script and downloaded script
 use File::Touch; # Perl implementation of the UNIX 'touch' command
 use File::Copy; # Provides the copy function
-use File::Basename; # Get directory of currently executing script
+use File::Spec qw(tmpdir); # Used to get portable directory paths
 use Cwd qw(abs_path); # Get absolute path of currently executing script
 
 # Globally accessible constants and variables TRUE
@@ -71,17 +71,17 @@ Readonly my %PARSER_EVENTS =>
     OTHER       =>  2,
 );
 
-# File IO / Flags
-my $logOpen = 0; # Flag to determine if log file has been opened
+# File I/O & Flags
+my $logOpen = FALSE; # Flag to determine if a log file has been opened
 my $logFile; # Log file descriptor, used in multiple functions
-my $csvOpen = 0; # Flag as above
+my $csvOpen = FALSE; # Flag as above
 my $csvFile; # CSV file descriptor, used for output
 my $serialPort; # Serial port file descriptor, used for input
 my $savedData = FALSE; # Indicates if we have saved data for the hour yet
 
 # Updates and Idle Mode
-my $updateAvailable = 0; # Update flag
-my $postUpdateExecuted; # Filename referred to in postUpdate()
+my $postUpdateExecuted; # Semaphore filename referred to in postUpdate()
+my $updateAvailable = FALSE; # Update flag
 my $idleMode = FALSE; # Flag which tests if we have entered idle mode
 
 # Parser State Variables
@@ -92,22 +92,10 @@ my $currentEventTime = "0"; # Store the time of the current event (in a string)
 my $currentEventHour = "0"; # Just the hour portion of the current event time
 my $transactionCount = 0; # Counter for number of transactions per hour / day
 
-# The following hash is the list of recognised PLUs, in the future these could be read in from a file
+# The following hash will contain the list of recognised PLUs, these will be read in from a file
 # We tie this hash to preserve the insertion order for later use in CSV columns, saves front-end work
 my %PLUList;
 tie %PLUList, "Tie::IxHash";
-%PLUList = 
-(
-    "Hot Food"         => "0",
-    "Cold Takeaway"    => "0",
-    "Meal Deal"        => "0",
-    "Drinks & Crisps"  => "0",
-    "Bread & Rolls"    => "0",
-    "Cakes"            => "0",
-    "Celebration Cake" => "0",
-    "Party Platter"    => "0",
-    "Carrier Bag"      => "0"
-);
 
 # The following data structure holds data for each of the columns that will eventually comprise the CSV file
 # We store transactions as we read them, make calculations from this data and convert it to CSV once hourly
@@ -164,33 +152,26 @@ sub logMsg
     # Write message to file if logging is enabled
     if ($LOGGING_ENABLED)
     {
-        if ($logOpen == 0)
+        if ($logOpen == FALSE)
         {
             # Create a new log file each month with the month and year included in the filename
             my @currentDate = getCurrentDate(); # Returned as year, month and day
             my $logFileName = "SAMPi-" . $currentDate[1] . "-" . $currentDate[0] . ".log"; # Construct the filename
 
-            # Attempt to open the log file (located in the directory of the currently running script) in append mode
+            # Attempt to open the log file (located in the 'log' subdir of the current directory) in append mode
             ## no critic qw(RequireBriefOpen)
-            if (open $logFile, '>>', dirname($0) . $DIRECTORY_SEPARATOR . $logFileName)
+            unless (open ($logFile, '>>', "log" . $DIRECTORY_SEPARATOR . $logFileName))
             {
-                $logFile->autoflush(1); # Disable buffering
-                $logOpen = 1;
+                logMsg("Error opening log file at \"log/$logFileName\"");
+                die("Error opening log file at \"log/$logFileName\"\n");
             }
 
-            # Print an error if unsuccessful 
-            else
-            {
-                carp "Failed to open log file: $!\n";
-                $logOpen = -1;
-            }
+            $logFile->autoflush(1); # Disable buffering
+            $logOpen = TRUE;
         }
 
-        if ($logOpen)
-        {
-            # Write message with timestamp to the log file
-            print $logFile "$timestampStr: $logMessage\n";
-        }
+        # Write message with timestamp to the log file
+        print $logFile "$timestampStr: $logMessage\n";
     }
 
     # Print the message to STDOUT in any case
@@ -257,7 +238,7 @@ sub isBusinessHours
             if (defined $csvFile)
             {
                 close $csvFile; # Close the CSV file handle for the days' transactions
-                $csvOpen = 0;
+                $csvOpen = FALSE;
             }
 
             clearData(); # Clear the stored data
@@ -293,7 +274,7 @@ sub isUpdateAvailable
     if (compare ($CURRENT_VERSION_PATH, $LATEST_VERSION_PATH) == 1) 
     {
         # So we report this availability to the caller 
-        return FALSE;
+        return TRUE;
 	}
 
     else
@@ -520,7 +501,6 @@ sub parseTransaction
     {
         # For regular transactions, do some validation and then add 
         # to the total for that PLU / product category 
-        
         trim($transactionKey); # Remove leading and trailing spaces
         $transactionKey =~ s/(\w+)/\u\L$1/gx; # Normalise PLU case to 'Title Case'
 
@@ -732,14 +712,14 @@ sub normalise
     return lc($rawString);
 }
 
-# This function reads in the "shops.csv" file in the current parent directory and assigns an ID based on
+# This function reads in the "shops.csv" file in the config subdirectory and assigns an ID based on
 # The closest match between the current hostname and a shop name in the file, this is used to correctly
 # name CSV output files without this being hardcoded in the source
 sub getOutputFileName
 {
     # Get the hostname and the filepath of the shops file
     my $currentHostname = hostname();
-    my $shopFilePath = File::Spec->updir() . $DIRECTORY_SEPARATOR . "shops.csv";
+    my $shopFilePath = "config/shops.csv";
 
     # File handles for the shops file
     my $shopIDFile;
@@ -795,7 +775,7 @@ sub getOutputFileName
     }
 
     # Set the filename in the format "yyyymmdd_matchedID.csv"
-    my $outputFileName = dirname(dirname($CURRENT_VERSION_PATH)) . $DIRECTORY_SEPARATOR . "ecr_data" . $DIRECTORY_SEPARATOR .
+    my $outputFileName = dirname($CURRENT_VERSION_PATH) . $DIRECTORY_SEPARATOR . "ecr_data" . $DIRECTORY_SEPARATOR .
         $currentDate[0] . $currentDate[1] . $currentDate[2] . "_$matchedID.csv";
 
     return $outputFileName;
@@ -807,6 +787,7 @@ sub initialiseOutputFile
 {
     my @csvHeadings; # Store CSV headings
     my $outputFilePath = getOutputFileName(); 
+    my $pluFile; # PLU filehandle
 
     # If the file does not exist, create it and add the correct headings
     if (! -e $outputFilePath)
@@ -814,7 +795,13 @@ sub initialiseOutputFile
         logMsg("Creating CSV file $outputFilePath");
 
         ## no critic qw(RequireBriefOpen)
-        $csvOpen = open($csvFile, '>>', $outputFilePath) or die "Error opening CSV file: $!";
+        unless (open ($csvFile, '>>', $outputFilePath))
+        {
+            logMsg("Error creating CSV output file at $outputFilePath");
+            die("Error crearing CSV output file at $outputFilePath\n");
+        }
+
+        $csvOpen = TRUE;
 
         # Define the headings for the output file, these match the keys defined in the hourlyTransactionData hash
         foreach my $key (keys %hourlyTransactionData)
@@ -855,10 +842,16 @@ sub initialiseOutputFile
     {
         logMsg("Opening existing CSV file $outputFilePath");
         ## no critic qw(RequireBriefOpen)
-        $csvOpen = open($csvFile, '>>', $outputFilePath) or die "Error opening CSV file: $!";
+        unless (open ($csvFile, '>>', $outputFilePath))
+        {
+            logMsg("Error opening CSV output file at $outputFilePath");
+            die("Error opening CSV output file at $outputFilePath\n");
+        }
+
+        $csvOpen = TRUE;
     }
 
-    $csvFile->autoflush(1);
+    $csvFile->autoflush(1); # Disable output buffering
 
     return;
 }
@@ -870,7 +863,26 @@ sub processData
 {
     if (!$serialPort)
     {
-        croak("Serial port has not been configured, call initialiseSerialPort() before this function");
+        croak("Serial port has not been configured, call initialiseSerialPort() before this function\n");
+    }
+
+    # Read the plu.txt file in the config subdirectory to retrieve a list of acceptable PLU values
+    unless (open (my $pluFile, '<', "config/plu.txt"))
+    {
+        logMsg("Error reading PLU file, \"plu.txt\" should be in the config directory");
+        die "Error reading PLU file\n";
+    }
+
+    else
+    {
+        # Populate the PLUList structure with the acceptable PLU values
+        while (my $pluLine = <$pluFile>)
+        {
+            chomp($pluLine);
+            $PLUList{$pluLine} = "0";
+        }
+
+        close ($pluFile);
     }
 
     # Check to see if SAMPi is running during business hours which will determine active / idle mode 
