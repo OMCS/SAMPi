@@ -1,0 +1,100 @@
+\documentclass[a4paper,12pt]{article}
+\pagenumbering{gobble} 
+\usepackage[margin=2.5cm]{geometry} % Sets a 0.8 inch margin on all four sides
+\usepackage{fancyhdr}
+\usepackage{textcomp}
+\usepackage{parskip} % Block Paragraphs
+\usepackage{xcolor}
+\usepackage{hyperref}
+\newcommand*{\SignatureAndDate}[1]{%
+    \par\noindent\makebox[2.5in]{\hrulefill} \hfill\makebox[2.0in]{\hrulefill}%
+    \par\noindent\makebox[2.5in][l]{#1}      \hfill\makebox[2.0in][l]{Date}%
+}%
+\lhead{OMCS Software Development}
+% UK Date Format
+\usepackage[UKenglish]{babel}
+\usepackage[UKenglish]{isodate}
+\cleanlookdateon
+\chead{Wenzel's Proposal}
+\rhead{October 2015}
+\newcommand{\squarebullet}{\textcolor{black}{\raisebox{.45ex}{\rule{.6ex}{.6ex}}}}
+\renewcommand{\labelitemi}{\squarebullet}
+\frenchspacing
+\title{\textit{SAMPi} - Automated Transaction Reporting System\\~\\Business Proposal for Wenzel's}
+\author{OMCS Software Development (\href{mailto:omcs.software@gmx.com}{\nolinkurl{omcs.software@gmx.com}})}
+\date{October 2015}
+\begin{document}
+\null  % Empty line
+\pagestyle{empty}
+\nointerlineskip  % No skip for prev line
+\vfill
+\let\snewpage \newpage
+\let\newpage \relax
+\maketitle
+\let \newpage \snewpage
+\vfill 
+\break % page break
+\thispagestyle{empty}
+\maketitle
+\thispagestyle{empty}
+\newpage
+\pagestyle{fancy}
+\thispagestyle{fancy}
+\pagenumbering{arabic}
+\section*{Proposed System}
+By choosing to use my system and services, you will benefit from the following:
+\begin{enumerate}
+    \item {A powerful, scalable and fully customised software system (\textit{SAMPi}) designed specifically for Wenzel's business reporting needs. The proposed system would work as well in two stores as it would in two hundred, seamlessly adjusting to your expanding business. No existing solution can provide such close integration with your business.}
+    \item {A system which works with inexpensive, off-the-shelf hardware that can be purchased and owned by Wenzel's and easily repaired / replaced. No hardware rental costs and no need to change existing tills to expensive Windows-based POS systems.}
+    \item {One year of free support and bug-fixes, with the option to extend this on a yearly basis for a reasonable fee.}
+    \item {Expertise, advice and support for deploying the system to all of your stores.}
+    \item {A robust system-monitoring package, which would allow your IT staff to identify any issues with the system quickly and easily.}
+    \item {A perpetual, non-exclusive license to use the current major (v1) version of the software, with no yearly licensing fees.}
+\end{enumerate}
+\section*{Quote \textrightarrow \textsterling4,000}
+\begin{itemize}
+    \item{Software Development \textrightarrow \textsterling2,000 (50 Hours)}
+        \begin{itemize}
+            \item {Analysis \textrightarrow \textsterling200 (5 Hours)}
+            \item {Design \textrightarrow \textsterling200 (5 Hours)}
+            \item {Prototype Development \textrightarrow \textsterling600 (15 Hours)}
+            \item {Testing I \textrightarrow \textsterling100 (2.5 Hours)}
+            \item {Implementation \textrightarrow \textsterling800 (20 Hours)}
+            \item {Testing II \textrightarrow \textsterling100 (2.5 Hours)}
+        \end{itemize}
+    \item{Licensing and Support \textrightarrow \textsterling1,800}
+        \begin{itemize}
+            \item {Perpetual, non-exclusive, company-wide license to use the \textit{SAMPi} version 1 software \textrightarrow \textsterling1,800 }
+            \item {Complementary Support Coverage (1 Year) \textrightarrow \textsterling0}
+            \item{Complementary Installation and Deployment Support \textrightarrow \textsterling0}
+        \end{itemize}
+    \item{Miscellaneous \textrightarrow \textsterling200}
+        \begin{itemize}
+            \item{Monitoring System \& Setup \textrightarrow \textsterling170}
+            \item{Dynamic DNS Hostnames \& Setup \textrightarrow \textsterling30}
+    \end{itemize}
+\end{itemize}
+
+I would like to request \textsterling1,500 on acceptance to cover my initial prototyping and development fees. The remainder can be paid once \textit{SAMPi} has been successfully installed in three stores and you are satisfied that the system meets your business needs. 
+
+I will then provide support with deploying to the remaining stores free of charge, as part of your complementary year of support, which would begin upon acceptance of the above quote.
+\section*{Hardware}
+In addition to the invoice above, a small internal budget will need to be assigned for initial hardware costs. I have consulted with Ryan and produced the following list of required components. Apart from any required replacements (which will be rare as these computers are very robust), this is effectively a one-time expense which provides hardware for all of your currently open stores.
+
+A \textit{SAMPi} system requires the following hardware components:
+\begin{itemize}
+    \item{\textit{Raspberry Pi} Computer }
+\item{Micro SD Card}
+\item{USB WiFi Adapter }
+\item{RS232 Serial to USB Cable and suitable null-modem Adapter}
+\item{USB to RS232 Serial Console Cable}
+\item{5v Power Supply and Micro-USB Cable}
+\item{Suitable shock and debris resistant case}
+\end{itemize}
+Exact costs will vary depending on specific models of hardware purchased and supplier, but I estimate hardware costs per till to be no more than \textbf{\textsterling70}. If you decide to go ahead with this proposal I recommend giving responsibility for purchasing the required hardware to Ryan.
+\section*{Declaration}
+In signing below, I hereby agree to the above proposal, accept the payment terms outlined therein and give consent for work to begin immediately.
+\vspace{0.5cm}
+\SignatureAndDate{Oliver Saunders, \textit{OMCS Software Development}}
+\SignatureAndDate{Attila Juhasz, \textit{Wenzel's The Bakers Ltd}}
+\end{document}

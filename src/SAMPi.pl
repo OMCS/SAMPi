@@ -47,7 +47,7 @@ use Cwd qw(abs_path); # Get absolute path of currently executing script
 
 # Globally accessible constants and variables TRUE
 
-Readonly our $VERSION => 0.76;
+Readonly our $VERSION => 1.0;
 
 Readonly my $LOGGING_ENABLED        => TRUE; # Enable or disable logging to file
 Readonly my $UPDATE_HOOK_ENABLED    => FALSE; # Attempt to call the postUpdate() function once on start if TRUE
