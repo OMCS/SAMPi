@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 #
-# SAMPi - SAM4S ECR data reader, parser and logger (Last Modified 09/10/2015)
+# SAMPi - SAM4S ECR data reader, parser and logger (Last Modified 10/10/2015)
 #
 # This software runs in the background on a suitably configured Raspberry Pi,
 # reads from a connected SAM4S ECR via serial connection, extracts various data,
@@ -21,31 +21,31 @@ use warnings;
 # Imported Modules #
 
 # Meta
-use constant::boolean; # Defines TRUE and FALSE constants, Perl lacks an explicit boolean type
-use Readonly; # Allows read-only constants
 use Carp; # Provides alternative warn and die functions
+use Readonly; # Allows read-only constants
+use constant::boolean; # Defines TRUE and FALSE constants, Perl lacks an explicit boolean type
 
 # Misc
-use Sys::RunAlone; # This module ensures only one instance of this software runs concurrently
-use Sys::Hostname; # Acquire hostname 
-use Device::SerialPort; # Serial I/O 
-use Tie::IxHash; # Preserve the insertion order of hashes
-use Text::Trim; # Remove leading and trailing whitespace
-use LWP::Simple qw(getstore is_error $ua); # Used to download updates
-use Digest::SHA1 qw(sha1_base64); # SHA1 checksum library
-use Time::HiRes qw(sleep); # Allows sleeping for less than a second
 use Clone qw(clone); # Allows deep copying of nested hashes
 use Data::Dumper; # Allows printing transaction data to screen for debugging
+use Device::SerialPort; # Serial I/O 
+use Digest::SHA1 qw(sha1_base64); # SHA1 checksum library
+use LWP::Simple qw(getstore is_error $ua); # Used to download updates
+use Sys::Hostname; # Acquire hostname 
+use Sys::RunAlone; # This module ensures only one instance of this software runs concurrently
+use Text::Trim; # Remove leading and trailing whitespace
+use Tie::IxHash; # Preserve the insertion order of hashes
+use Time::HiRes qw(sleep); # Allows sleeping for less than a second
 
 # File I/O
+use Cwd qw(abs_path); # Get absolute path of currently executing script
 use File::Basename; # Provides the dirname() function
 use File::Compare; # Compare currently running script and downloaded script
-use File::Touch; # Perl implementation of the UNIX 'touch' command
 use File::Copy; # Provides the copy function
 use File::Spec qw(tmpdir); # Used to get portable directory paths
-use Cwd qw(abs_path); # Get absolute path of currently executing script
+use File::Touch; # Perl implementation of the UNIX 'touch' command
 
-# Globally accessible constants and variables TRUE
+# Globally accessible constants and variables #
 
 Readonly our $VERSION => 1.0;
 
