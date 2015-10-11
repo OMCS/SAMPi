@@ -652,7 +652,6 @@ sub clearData
 }
 
 # This function writes the stored data to CSV format for uploading 
-## no critic qw(RequireArgUnpacking)
 sub generateCSV
 {
     # Create an appropriately named CSV file and open it in append mode if it does not already exist
