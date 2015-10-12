@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 #
-# SAMPi - SAM4S ECR data reader, parser and logger (Last Modified 10/10/2015)
+# SAMPi - SAM4S ECR data reader, parser and logger (Last Modified 12/10/2015)
 #
 # This software runs in the background on a suitably configured Raspberry Pi,
 # reads from a connected SAM4S ECR via serial connection, extracts various data,
@@ -209,9 +209,7 @@ sub logMsg
     {
         if ($logOpen == FALSE)
         {
-            # Create a new log file each month with the month and year included in the filename
-            my @currentDate = getCurrentDate(); # Returned as year, month and day
-            my $logFileName = "SAMPi-" . $currentDate[1] . "-" . $currentDate[0] . ".log"; # Construct the filename
+            my $logFileName = "sampi.log";
 
             # Attempt to open the log file (located in the 'log' subdir of the current directory) in append mode
             ## no critic qw(RequireBriefOpen)
