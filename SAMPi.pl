@@ -51,7 +51,7 @@ Readonly our $VERSION => 1.0;
 
 Readonly my $LOGGING_ENABLED        => TRUE; # Enable or disable logging to file
 Readonly my $UPDATE_HOOK_ENABLED    => FALSE; # Attempt to call the postUpdate() function once on start if TRUE
-Readonly my $VERBOSE_PARSER_ENABLED => FALSE; # If enabled, the parser will print information as it runs
+Readonly my $VERBOSE_PARSER_ENABLED => TRUE; # If enabled, the parser will print information as it runs
 Readonly my $DEBUG_ENABLED          => TRUE; # If enabled, read current time from latest serial header instead of clock
 
 Readonly my $DIRECTORY_SEPARATOR        => ($^O =~ /Win/) ? "\\" : "/"; # Ternary operator used for brevity
@@ -63,12 +63,67 @@ Readonly my $UPDATE_CHECK_DELAY_MINUTES => 20; # Check for updates every 20 minu
 Readonly my $STORE_OPENING_HOUR_24 => 6;
 Readonly my $STORE_CLOSING_HOUR_24 => 23;
 
+# Internationalisation
+Readonly my $CURRENCY_SYMBOL => '£';
+
 # Constants used to identify which part of the data we are currently parsing
 Readonly my %PARSER_EVENTS =>
 (
-    HEADER      =>  0,
-    TRANSACTION =>  1,
-    OTHER       =>  2,
+    "HEADER" => 1,
+    "TRANSACTION" => 2,
+    "OTHER" => 3
+);
+
+# Dispatch table (array of hashes) to simplify parsing and remove the need for long if-else chains
+# Links a regex, which matches a line of data, to the action to call when a match is discovered 
+Readonly my @EVENT_DISPATCH_TABLE => 
+(
+    {
+        parser => \&parseHeader,
+        regexp => qr/^\d{1,2}\/\d{2}\/\d{4}/x, # Begins with a date in [d]d/mm/yyyy format
+    },
+    {
+        parser => \&parseReport,
+        regexp => qr/REPORT/x, # Contains "REPORT"
+    },
+    {
+        parser => \&parseCancelOrReprint,
+        regexp => qr/(^CANCEL|REPRINT)/x, # Begins with "CANCEL" or contains "REPRINT"
+    },
+    {
+        parser => \&parseRefund,
+        regexp => qr/^PAID\sOUT/x, # Begins with "PAID OUT"
+    },   
+    {
+        parser => \&parseNoSale,
+        regexp => qr/NOSALE/x, # Contains "NOSALE", these need to be recorded
+    },
+    {
+        parser => \&parseDiagnostic,
+        regexp => qr/=/x, # Contains '=', used to delimit blocks of diagnostics
+    }
+);
+
+# Similar dispatch table for processing various transaction data
+Readonly my @TRANSACTION_DISPATCH_TABLE =>
+(
+    {
+        parser => \&adjustTotal,
+        regexp => qr/TOTAL/x, # Contains "TOTAL"
+    },
+    {
+        parser => \&adjustCashTotal, # Wrapper for adjustTotal()
+        regexp => qr/CASH/x, # Contains "CASH"
+    },
+
+    {
+        parser => \&adjustChange, # Could use a flag for adjustTotal() but complete separation is cleaner
+        regexp => qr/CHANGE/x, # Contains "CHANGE"
+    },
+    {
+        parser => \&adjustCardTotal, # Also a wrapper for adjustTotal()
+        regexp => qr/(CHEQUE|CARD)/x, # Contains "CHEQUE" or "CARD"
+    }
 );
 
 # File I/O & Flags
@@ -91,6 +146,7 @@ my $currentEvent = $PARSER_EVENTS{OTHER}; # Tracks the current type of data bein
 my $currentEventTime = "0"; # Store the time of the current event (in a string)
 my $currentEventHour = "0"; # Just the hour portion of the current event time
 my $transactionCount = 0; # Counter for number of transactions per hour / day
+my $inVoidMode = FALSE; # Flag determines if we are undoing a past transaction
 
 # The following hash will contain the list of recognised PLUs, these will be read in from a file
 # We tie this hash to preserve the insertion order for later use in CSV columns, saves front-end work
@@ -246,7 +302,10 @@ sub isBusinessHours
             $idleMode = TRUE;
         }
 
-        return FALSE;
+        # If we are debugging the parser we want to disable idle mode
+        return FALSE unless $VERBOSE_PARSER_ENABLED; 
+
+        return TRUE;
     }
 }
 
@@ -373,21 +432,40 @@ sub saveData
     return;
 }
 
+# This function correctly sets the $previousEvent variable depending on the current event
+sub setPreviousEvent
+{
+    if ($currentEvent == $PARSER_EVENTS{OTHER})
+    {
+        $previousEvent = $PARSER_EVENTS{OTHER};
+    }
+
+    elsif ($currentEvent == $PARSER_EVENTS{TRANSACTION})
+    {
+        $previousEvent = $PARSER_EVENTS{TRANSACTION};
+    }
+
+    return;
+}
+
 # This function is part of the parser, it processes headers
 # Each header represents a separate event (transaction or report) and includes a 
 # timestamp which is extracted and stored for later use
 sub parseHeader
 {
     my ($headerLine) = @_;
-    
-    # Keep track of the previous event if it was a transaction
-    if ($currentEvent == $PARSER_EVENTS{TRANSACTION})
-    {
-        # This enables counting transactions
-        $previousEvent = $PARSER_EVENTS{TRANSACTION};
-    }
 
-    $currentEvent = $PARSER_EVENTS{HEADER};
+    # Make a copy of the current transaction data so we can revert if requried
+    %hourlyTransactionDataCopy = %{ clone(\%hourlyTransactionData) };
+
+    # Print out the most recently processed transaction if we are debugging
+    if ($previousEvent == $PARSER_EVENTS{TRANSACTION})
+    {
+        if ($VERBOSE_PARSER_ENABLED)
+        {
+            print Dumper(\%hourlyTransactionData);
+        }
+    }
 
     # Extract the event time into the $1 reserved variable
     $headerLine =~ /([0-9][0-9]:[0-9][0-9])/x;
@@ -435,123 +513,149 @@ sub parseHeader
     if ($VERBOSE_PARSER_ENABLED)
     {
         print "HEADER AT $currentEventTime\n";
-    }
+    }    
+    
+    # Set the current parser state
+    $currentEvent = $PARSER_EVENTS{HEADER};
 
     return;
 }
 
-# This function is part of the parser, it processes transactions
-# Each transaction is part of a group and contains the PLU and price for one or more 
-# items. These are processed as key-value pairs with consideration for lines that
-# do not represent PLUs (e.g. totals or payment method listings)
-## no critic qw(ProhibitCascadingIfElse)
+# This function is called when a report header is matched in the incoming data. It does not currently do anything
+# As reports are ignored in the current implementation in favour of manually calculating totals
+# In the future this function could be used to read specific data from reports and act on it
+sub parseReport
+{
+    if ($VERBOSE_PARSER_ENABLED)
+    {
+        print "REPORT AT $currentEventTime\n";
+    }
+
+    $currentEvent = $PARSER_EVENTS{OTHER};
+    return;
+}
+
+# This is one of several short functions for parsing transactions, this function adjusts the total for card, cash or overall
+# depending on the value of the second parameter passed in
+sub adjustTotal
+{
+    my ($transactionValue, $totalFor) = @_;
+
+    if (not defined $totalFor)
+    {
+        # Increment the transaction count, can decrement later if we read a cancel or a reprint
+        $transactionCount++; 
+
+        # Overall total will be adjusted
+        $totalFor = "Total Takings"; 
+    }
+        
+    # If we are in VOID mode we add a negative number (i.e. subtract from) to the hourly total
+    # Otherwise we just perform a simple addition 
+    $transactionValue = ($inVoidMode ? -$transactionValue : $transactionValue); 
+
+    # Add to or subtract from the desired total according to the value of the second parameter
+    $hourlyTransactionData{$totalFor} += $transactionValue;
+
+    return;
+}
+
+# Handle Cash Total
+sub adjustCashTotal
+{
+    (my $cashTotal) = @_;
+    adjustTotal($cashTotal, "Cash");
+    return;
+}
+
+# Handle Change
+sub adjustChange
+{
+    # TODO: Add supoort for VOID mode to this function
+    my ($changeValue) = @_;
+    $hourlyTransactionData{"Cash"} = $hourlyTransactionData{"Cash"} - $changeValue;
+    return;
+}
+
+# Handle Card Total
+sub adjustCardTotal
+{
+    (my $cardTotal) = @_;
+    adjustTotal($cardTotal, "Credit Cards");
+    return;
+}
+
+# This function parses transactions, each is part of a group and contains the PLU and price for one or more items. 
+# These are processed as key-value pairs with validation to remove lines that are invalid or do not represent PLUs (e.g. totals)
+# Similarly to the parseLine() function, this function makes use of a dispatch table instead of a long if-elsif-else construct
 sub parseTransaction
 {
     my ($transactionLine) = @_;
 
+    # Ensure we are expecting a transaction and the line contains a price
+    if ($currentEvent != $PARSER_EVENTS{HEADER} and $currentEvent != $PARSER_EVENTS{TRANSACTION}
+        or index($transactionLine, $CURRENCY_SYMBOL) == -1)
+    {
+        return;
+    }  
+    
     $currentEvent = $PARSER_EVENTS{TRANSACTION};
 
     # Separate the data into a key (PLU) and a value (price) to use as input for the second-stage parser
-    my ($transactionKey, $transactionValue) = split('£', $transactionLine, 2);
+    my ($transactionKey, $transactionValue) = split($CURRENCY_SYMBOL, $transactionLine, 2);
 
-    # If we read a 'TOTAL' line
-    if (index($transactionKey, "TOTAL") != -1)
+    # Search the dispatch table for a suitable parser for the given $transactionKey
+    # This only applies to keys which are not product PLUs (e.g. totals)
+    foreach my $transactionKeyType (@TRANSACTION_DISPATCH_TABLE) 
     {
-        # Add to the hourly total 
-        $hourlyTransactionData{"Total Takings"} += $transactionValue;
-
-        # Increment the transaction total, can decrement later if we read a cancel
-        # or a reprint
-        $transactionCount++;
-        return;
+        if ($transactionKey =~ $transactionKeyType->{regexp}) 
+        {
+            # Call the appropriate parsing function with the transaction value as a parameter
+            $transactionKeyType->{parser}->($transactionValue);
+            return;
+        }
     }
 
-    # Handle the 'CASH' total
-    elsif (index($transactionKey, "CASH") != -1)
-    {
-        # Add to the hourly total for cash payments
-        $hourlyTransactionData{"Cash"} += $transactionValue;
-        return;
-    }
+    # If no key-specific parsing function was found, we are processing a simple "PLU => VALUE" transaction
+    # We need to perform validation and ensure that the key is a valid PLU and then add to the total for
+    # The correct product category for that PLU if validation is successful 
+    
+    trim($transactionKey); # Remove leading and trailing spaces
+    $transactionKey =~ s/(\w+)/\u\L$1/gx; # Normalise PLU case to "Title Case"
 
-    # Do not include money given back as change in the amount of cash taken in
-    elsif (index($transactionKey, "CHANGE") != -1)
+    # Ensure the PLU / key matches one of the expected categories
+    if (exists($PLUList{$transactionKey}))
     {
-        $hourlyTransactionData{"Cash"} = $hourlyTransactionData{"Cash"} - $transactionValue;
-        return;
-    }
-
-    # Handle "CHEQUE" lines currently signifying card payments, also handle "CARD"
-    elsif (index($transactionKey, "CHEQUE") != -1 or $transactionKey =~ /^CARD/x)
-    {
-        # Add to the hourly total for card payments
-        $hourlyTransactionData{"Credit Cards"} += $transactionValue;
-        return;
-    }
-
-    # Keep track of "NO SALE" lines, from people opening the till without processing a transaction
-    elsif (index($transactionKey, "NOSALE") != -1)
-    {
-        logMsg("Till opened but no transaction processed at $currentEventTime");   
-        $hourlyTransactionData{"No Sale"}++;
-        return;
+        # Add to the appropriate column in the data
+        $hourlyTransactionData{"PLU"}{$transactionKey} += $transactionValue; 
     }
 
     else
     {
-        # For regular transactions, do some validation and then add 
-        # to the total for that PLU / product category 
-        trim($transactionKey); # Remove leading and trailing spaces
-        $transactionKey =~ s/(\w+)/\u\L$1/gx; # Normalise PLU case to 'Title Case'
-
-        # Ensure the PLU / key matches one of the expected categories
-        if (exists($PLUList{$transactionKey}))
-        {
-            # Add to the appropriate column in the data
-            $hourlyTransactionData{"PLU"}{$transactionKey} += $transactionValue; 
-        }
-
-        else
-        {
-            logMsg("\"$transactionKey\" is not a valid PLU, ignoring");
-        }
-
-        if ($VERBOSE_PARSER_ENABLED)
-        {
-            print "\tITEM FOR TRANSACTION $transactionCount\n";
-        }
-
-        return;
+        logMsg("\"$transactionKey\" is not a valid PLU, ignoring");
     }
+
+    if ($VERBOSE_PARSER_ENABLED)
+    {
+        print "\tITEM FOR TRANSACTION $transactionCount\n";
+    }
+
+    return;
+} 
+
+# This function parses NOSALE messages, these occur when people open the till without processing a transaction
+# These should be logged for security and training purposes
+sub parseNoSale
+{
+    logMsg("Till opened but no transaction processed at $currentEventTime");   
+    $hourlyTransactionData{"No Sale"}++;
+    return;
 }
 
-# This function is responsible for parsing a line of serial data and storing various information which is later converted to CSV
-sub parseLine
+# This function parses cancelled or reprinted transactions and handles resetting the current state of the data
+sub parseCancelOrReprint
 {
-    # The line of data passed in as a parameter will be accessible as $dataLine
-    my ($dataLine) = @_;
-
-    # Replace any 0xc2 and 0x9c hex values, question marks or nulls returned by the serial port
-    $dataLine =~ s/\x{c2}//gx;
-    $dataLine =~ s/\x{9c}/£/gx;
-    $dataLine =~s/\?/£/gx;
-    $dataLine =~ s/\x{00}//gx;
-
-    # Set previous event correctly for reports
-    if ($currentEvent == $PARSER_EVENTS{OTHER})
-    {
-        $previousEvent = $PARSER_EVENTS{OTHER};
-    }
-
-    # If the line starts with a date in dd/mm/yyyy format, it is a header
-    if ($dataLine =~ /^\d{1,2}\/\d{2}\/\d{4}/x)
-    {
-        parseHeader($dataLine); # This will set $currentEvent to $HEADER
-        return;
-    }
-
-    # Handle cancelled and reprinted transactions
-    elsif ( ($dataLine =~ /^CANCEL/x or $dataLine =~ /REPRINT/x) and $currentEvent != $PARSER_EVENTS{OTHER} )
+    unless ($currentEvent == $PARSER_EVENTS{OTHER})
     {
         # Reset the state of the hourly transaction data to how it was before the current transaction
         logMsg("Ignoring cancelled or reprinted transaction at $currentEventTime");
@@ -559,69 +663,64 @@ sub parseLine
         $transactionCount--;
         $hourlyTransactionData{"Customer Count"} = $transactionCount;
         $currentEvent = $PARSER_EVENTS{OTHER};
-        return;
     }
 
-    # Ignore refunds for now, we aren't tracking them
-    elsif ($dataLine =~/^PAID\sOUT/x and $currentEvent != $PARSER_EVENTS{OTHER})
+    return;
+}
+
+# This function parses refunds, these are not currently implemented in SAMPi but may be in the future
+sub parseRefund
+{
+    logMsg("SAMPi does not currently implement refund tracking, ignoring");
+    $currentEvent = $PARSER_EVENTS{OTHER};
+    return;
+}
+
+# This function parses diagnostic information (e.g. settings), this is currently ignored but logged
+sub parseDiagnostic
+{
+    unless ($currentEvent == $PARSER_EVENTS{OTHER})
     {
-        logMsg("SAMPi does not currently implement refund tracking, ignoring");
+        # Ignore settings and diagnostic information
+        logMsg("Ignoring diagnostic output: $_[0]");
         $currentEvent = $PARSER_EVENTS{OTHER};
-        return;
-    }
-
-    # Ignore any settings or debugging information on the printout 
-    elsif ($dataLine =~/=/x and $currentEvent != $PARSER_EVENTS{OTHER}) 
-    {
-        logMsg("Ignoring diagnostic output: $dataLine");
-        $currentEvent = $PARSER_EVENTS{OTHER};
-        return;
-    }
-
-    # Process the first line after a header
-    if ($currentEvent == $PARSER_EVENTS{HEADER})
-    {
-        # Make a copy of the current transaction data so we can revert if requried
-        %hourlyTransactionDataCopy = %{ clone(\%hourlyTransactionData) };
-
-        # Print out the most recently processed transaction if we are debugging
-        if ($previousEvent == $PARSER_EVENTS{TRANSACTION})
-        {
-            if ($VERBOSE_PARSER_ENABLED)
-            {
-                print Dumper(\%hourlyTransactionData);
-            }
-        }
-
-        # If the line matches a report, ignore it until the next header
-        # We are currently ignoring reports in favour of collecting
-        # data from individual transactions, this may change in future
-        if (index($dataLine, 'REPORT') != -1)
-        {
-            if ($VERBOSE_PARSER_ENABLED)
-            {
-                print "Ignoring report at $currentEventTime\n";
-            }
-
-            $currentEvent = $PARSER_EVENTS{OTHER};
-        }
-
-        # If the line isn't a report and contains a price, prepare to process a transaction
-        if (index($dataLine, '£') != -1 and $currentEvent != $PARSER_EVENTS{OTHER})
-        {
-            $currentEvent = $PARSER_EVENTS{TRANSACTION};
-        }
-    }
-
-    # Ensure the line we are operating on matches a transaction
-    if ($currentEvent == $PARSER_EVENTS{TRANSACTION} and index($dataLine, '£') != -1)
-    {
-        parseTransaction($dataLine);
         return;
     }
 }
 
-# This function resets the hourlyTransactionData hash to ready it for another hour of data
+# This function is responsible for parsing a line of serial data and storing various information which is later converted to CSV
+# A dispatch table is used in preference to a long if-elsif-else chain as it is more efficient and better structured 
+sub parseLine
+{
+    # The line of data passed in as a parameter will be accessible as $dataLine
+    my ($dataLine) = @_;
+
+    # Remove any errant hex values or question marks returned by the serial port
+    $dataLine = normaliseData($dataLine);
+
+    # Set previous event correctly depending on type of last processed data line
+    setPreviousEvent();
+
+    # Match the current line with the entry for its data type in the dispatch table
+    # Lines matching a header will call parseHeader(), etc.
+    foreach my $dataType (@EVENT_DISPATCH_TABLE) 
+    {
+        if ($dataLine =~ $dataType->{regexp}) 
+        {
+            # Call the appropriate parsing function with the current line as a parameter
+            $dataType->{parser}->($dataLine);
+            return;
+        }
+    }
+
+    # If nothing in the dispatch table matched, we could be dealing with a transaction
+    # More validation is performed within the function to check if this is the case
+    parseTransaction($dataLine);
+
+    return;
+}
+
+# This function resets the hourlyTransactionData hash to ready it for another hour's worth of data
 sub clearData
 {
     # Iterate over the transaction data hash
@@ -700,15 +799,28 @@ sub generateCSV
     return;
 }
 
-# This function normalises a string (removes spaces and special characters and converts to lowercase)
+# This function normalises a string (removes non alphanumeric characters and converts to lowercase)
 # It is used to compare shop names with the current hostname to assign an ID to the output file(s)
-sub normalise
+sub normaliseStr
 {
     my ($rawString) = @_;
 
     $rawString =~ s/[^\w]//gx;
 
     return lc($rawString);
+}
+
+# This function normalises serial data by removing values which should not be seen by the parser
+sub normaliseData
+{
+    my ($dataLine) = @_;
+
+    $dataLine =~ s/\x{00}//gx;
+    $dataLine =~ s/\x{c2}//gx;
+    $dataLine =~ s/\x{9c}/$CURRENCY_SYMBOL/gx;
+    $dataLine =~s/\?/$CURRENCY_SYMBOL/gx;
+
+    return $dataLine;
 }
 
 # This function reads in the "shops.csv" file in the config subdirectory and assigns an ID based on
@@ -747,8 +859,8 @@ sub getOutputFileName
         (my $shopID, my $shopName) = split(',', $row, 2);
 
         # Normalise the strings for comparison
-        $shopName        = normalise($shopName);
-        $currentHostname = normalise($currentHostname);
+        $shopName        = normaliseStr($shopName);
+        $currentHostname = normaliseStr($currentHostname);
 
         # Check if the hostname contains the shop name
         if ($currentHostname =~ /$shopName/x)
