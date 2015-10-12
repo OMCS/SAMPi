@@ -101,7 +101,7 @@ Readonly my @EVENT_DISPATCH_TABLE =>
     {
         parser => \&parseDiagnostic,
         regexp => qr/=/x, # Contains '=', used to delimit blocks of diagnostics
-    }
+    },
 );
 
 # Similar dispatch table for processing various transaction data
@@ -146,7 +146,6 @@ my $currentEvent = $PARSER_EVENTS{OTHER}; # Tracks the current type of data bein
 my $currentEventTime = "0"; # Store the time of the current event (in a string)
 my $currentEventHour = "0"; # Just the hour portion of the current event time
 my $transactionCount = 0; # Counter for number of transactions per hour / day
-my $inVoidMode = FALSE; # Flag determines if we are undoing a past transaction
 
 # The following hash will contain the list of recognised PLUs, these will be read in from a file
 # We tie this hash to preserve the insertion order for later use in CSV columns, saves front-end work
@@ -550,11 +549,7 @@ sub adjustTotal
         $totalFor = "Total Takings"; 
     }
         
-    # If we are in VOID mode we add a negative number (i.e. subtract from) to the hourly total
-    # Otherwise we just perform a simple addition 
-    $transactionValue = ($inVoidMode ? -$transactionValue : $transactionValue); 
-
-    # Add to or subtract from the desired total according to the value of the second parameter
+    # Add to or subtract (in void mode) from the desired total according to the value of the second parameter
     $hourlyTransactionData{$totalFor} += $transactionValue;
 
     return;
@@ -571,7 +566,6 @@ sub adjustCashTotal
 # Handle Change
 sub adjustChange
 {
-    # TODO: Add supoort for VOID mode to this function
     my ($changeValue) = @_;
     $hourlyTransactionData{"Cash"} = $hourlyTransactionData{"Cash"} - $changeValue;
     return;
