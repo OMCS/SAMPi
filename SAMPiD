@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# SAMPiD - Daemon for the SAMPi ECR tool (Last Modified 09/10/2015)
+# SAMPiD - Daemon for the SAMPi ECR tool (Last Modified 12/10/2015)
 #
 # This software should be set to run on every boot and will ensure that 
 # the main Perl program which reads data via serial, logs it and prepares
@@ -68,7 +68,7 @@ main()
 # Copy every new or modified file in the ecr_data directory to the server
 uploadData()
 {
-    UPLOAD_PATH=$(dirname $SAMPI_PATH)/ecr_data
+    UPLOAD_PATH=$SAMPI_PATH/ecr_data
     echo "Uploading ECR data from $UPLOAD_PATH to server..."
 
     # rsync uses the archive, update (only send modified files), preserve time and verbose flags
