@@ -17,6 +17,7 @@
 
 use strict; 
 use warnings;
+use diagnostics;
 
 # Imported Modules #
 
@@ -49,9 +50,10 @@ use File::Touch; # Perl implementation of the UNIX 'touch' command
 
 Readonly our $VERSION => 1.0;
 
-Readonly my $LOGGING_ENABLED        => TRUE; # Enable or disable logging to file
+Readonly my $MONITOR_MODE_ENABLED   => TRUE;  # If enabled, SAMPi will not parse serial data and will simply store it
 Readonly my $UPDATE_HOOK_ENABLED    => FALSE; # Attempt to call the postUpdate() function once on start if TRUE
-Readonly my $VERBOSE_PARSER_ENABLED => TRUE; # If enabled, the parser will print information as it runs
+Readonly my $LOGGING_ENABLED        => TRUE; # Enable or disable logging info / warnings / errors to file
+Readonly my $VERBOSE_PARSER_ENABLED => TRUE; # If enabled, the parser will print information to STDOUT as it runs
 Readonly my $DEBUG_ENABLED          => TRUE; # If enabled, read current time from latest serial header instead of clock
 
 Readonly my $DIRECTORY_SEPARATOR        => ($^O =~ /Win/) ? "\\" : "/"; # Ternary operator used for brevity
@@ -131,6 +133,8 @@ my $logOpen = FALSE; # Flag to determine if a log file has been opened
 my $logFile; # Log file descriptor, used in multiple functions
 my $csvOpen = FALSE; # Flag as above
 my $csvFile; # CSV file descriptor, used for output
+my $serialLog; # Serial log descriptor (monitor mode only)
+my $dataOpen = FALSE; # Determines if serial log file has been opened (monitor mode only)
 my $serialPort; # Serial port file descriptor, used for input
 my $savedData = FALSE; # Indicates if we have saved data for the hour yet
 
@@ -215,7 +219,6 @@ sub logMsg
             ## no critic qw(RequireBriefOpen)
             unless (open ($logFile, '>>', "log" . $DIRECTORY_SEPARATOR . $logFileName))
             {
-                logMsg("Error opening log file at \"log/$logFileName\"");
                 die("Error opening log file at \"log/$logFileName\"\n");
             }
 
@@ -252,7 +255,7 @@ sub initialiseSerialPort
     if (!defined $serialPort)
     {
         logMsg("Error opening serial port $SERIAL_PORT: $!\n"); 
-        die;
+        die "Error opening serial port $SERIAL_PORT: $!\n";
     }
 
     $serialPort->baudrate($BPS);
@@ -361,7 +364,7 @@ sub updateAndReload
 
     else
     {
-        croak("This should not be called if there is no update available");
+        croak("updateAndReload() should not be called if there is no update available");
     }
 
     return;
@@ -405,7 +408,7 @@ sub postUpdate
 
     else
     {
-        logMsg("postUpdate() called previously, ignoring. Recommend setting \$UPDATE_HOOK_ENABLED to FALSE")
+        logMsg("postUpdate() called previously, ignoring. Recommend setting \$UPDATE_HOOK_ENABLED to FALSE");
     }
     
     return;
@@ -712,6 +715,33 @@ sub parseLine
     return;
 }
 
+# This function is called when SAMPi is operating in monitor (non-parsing) mode
+# It will save the given line of serial data to a serial log file for later use
+## no critic qw(RequireBriefOpen)
+sub storeLine
+{
+    my ($dataLine) = @_;
+
+    my @date = getCurrentDate();
+    my $serialLogFileName = $ENV{'HOME'} . $DIRECTORY_SEPARATOR . "serial_log_" . $date[2] . ".dat"; 
+
+    if (!$dataOpen)
+    {
+        unless (open ($serialLog, '>>', $serialLogFileName))
+        {
+            logMsg("Error opening serial log file at $serialLogFileName");
+            die;
+        }
+
+        $dataOpen = TRUE;
+        $serialLog->autoflush(1); # Disable output buffering
+    }
+
+    print $serialLog $dataLine;
+
+    return;
+}
+
 # This function resets the hourlyTransactionData hash to ready it for another hour's worth of data
 sub clearData
 {
@@ -835,9 +865,7 @@ sub getOutputFileName
 
     # Open the shops file in read mode
     ## no critic qw(RequireBriefOpen)
-    my $open = open($shopIDFile, "<", $shopFilePath);
-    
-    if (!$open)
+    unless (open ($shopIDFile, '<', "config/plu.txt"))
     {
         logMsg("Error opening $shopFilePath: $!");
         die "Error opening $shopFilePath: $!";
@@ -1000,6 +1028,14 @@ sub processData
             # Wait until we have read a line of data 
             if (my $serialDataLine = $serialPort->lookfor()) 
             {
+                # If we are in monitor mode
+                if ($MONITOR_MODE_ENABLED)
+                {
+                    # Save the raw data to the log file
+                    storeLine("$serialDataLine\n");
+                    next;
+                }
+
                 # Parse the line of data
                 parseLine($serialDataLine);
             }
@@ -1063,6 +1099,11 @@ sub main
     if ($UPDATE_HOOK_ENABLED)
     {
         postUpdate();
+    }
+
+    if ($MONITOR_MODE_ENABLED)
+    {
+        logMsg("MONITOR MODE ENABLED, STORING DATA");
     }
 
     initialiseSerialPort();
