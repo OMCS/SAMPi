@@ -40,7 +40,9 @@ main()
         # Link cleanup function to exit, should run if script crashes or is quit
         trap "cleanup" EXIT
     else
-        echo "SAMPiD is already running, exiting" > /dev/tty
+        if [[ -n "$PS1" ]]; then
+            echo "SAMPiD is already running, exiting" > /dev/tty
+        fi
         exit 1
     fi
 
