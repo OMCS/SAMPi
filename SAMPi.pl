@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 #
-# SAMPi - SAM4S ECR data reader, parser and logger (Last Modified 12/10/2015)
+# SAMPi - SAM4S ECR data reader, parser and logger (Last Modified 14/10/2015)
 #
 # This software runs in the background on a suitably configured Raspberry Pi,
 # reads from a connected SAM4S ECR via serial connection, extracts various data,
@@ -50,7 +50,7 @@ use File::Touch; # Perl implementation of the UNIX 'touch' command
 
 Readonly our $VERSION => 1.0;
 
-Readonly my $MONITOR_MODE_ENABLED   => TRUE;  # If enabled, SAMPi will not parse serial data and will simply store it
+Readonly my $MONITOR_MODE_ENABLED   => FALSE;  # If enabled, SAMPi will not parse serial data and will simply store it
 Readonly my $UPDATE_HOOK_ENABLED    => FALSE; # Attempt to call the postUpdate() function once on start if TRUE
 Readonly my $LOGGING_ENABLED        => TRUE; # Enable or disable logging info / warnings / errors to file
 Readonly my $VERBOSE_PARSER_ENABLED => TRUE; # If enabled, the parser will print information to STDOUT as it runs
@@ -219,7 +219,7 @@ sub logMsg
             ## no critic qw(RequireBriefOpen)
             unless (open ($logFile, '>>', "log" . $DIRECTORY_SEPARATOR . $logFileName))
             {
-                die("Error opening log file at \"log/$logFileName\"\n");
+                die("Error opening log file at ." . $DIRECTORY_SEPARATOR . "log" . $DIRECTORY_SEPARATOR . "$logFileName\n");
             }
 
             $logFile->autoflush(1); # Disable buffering
@@ -723,16 +723,17 @@ sub storeLine
     my ($dataLine) = @_;
 
     my @date = getCurrentDate();
-    my $serialLogFileName = $ENV{'HOME'} . $DIRECTORY_SEPARATOR . "serial_log_" . $date[2] . ".dat"; 
+    my $serialLogFilePath = $ENV{'HOME'} . $DIRECTORY_SEPARATOR . "serial_log_" . $date[2] . ".dat"; 
 
     if (!$dataOpen)
     {
-        unless (open ($serialLog, '>>', $serialLogFileName))
+        unless (open ($serialLog, '>>', $serialLogFilePath))
         {
-            logMsg("Error opening serial log file at $serialLogFileName");
+            logMsg("Error opening serial log file at $serialLogFilePath");
             die;
         }
 
+        logMsg("Opened serial data log at $serialLogFilePath");
         $dataOpen = TRUE;
         $serialLog->autoflush(1); # Disable output buffering
     }

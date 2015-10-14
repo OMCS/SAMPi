@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# SAMPiD - Daemon for the SAMPi ECR tool (Last Modified 12/10/2015)
+# SAMPiD - Daemon for the SAMPi ECR tool (Last Modified 14/10/2015)
 #
 # This software should be set to run on every boot and will ensure that 
 # the main Perl program which reads data via serial, logs it and prepares
@@ -40,10 +40,15 @@ main()
         # Link cleanup function to exit, should run if script crashes or is quit
         trap "cleanup" EXIT
     else
-        if [[ -n "$PS1" ]]; then
-            echo "SAMPiD is already running, exiting" > /dev/tty
+        if [[ -z "$PS1" ]]; then
+            echo "SAMPiD is already running, exiting" > $(tty)
         fi
         exit 1
+    fi
+
+    # Send all output from this daemon to the system logger if enabled
+    if [[ $ENABLE_LOGGING == 1 ]]; then 
+        exec 1> >(logger -t "SAMPiD") 2> >(logger -t "SAMPiD_ERROR")
     fi
 
     # Main loop
@@ -51,7 +56,8 @@ main()
         # Attempt to run SAMPi.pl (in the background) in case it is not already running or has crashed
         alreadyRunning=$(ps aux | grep -i "SAMPi.pl" | grep -v "grep" | wc -l)
         if (($alreadyRunning == 0)); then
-            nohup $SAMPI_PATH/SAMPi.pl > /dev/null 2>&1 &
+            cd $SAMPI_PATH
+            /usr/bin/perl $SAMPI_PATH/SAMPi.pl > /dev/null 2>&1 &
         fi
 
         # Attempt to upload the currently collected data via SFTP using rsync
@@ -91,12 +97,7 @@ removeOldData()
 if [[ $(uname) == 'Linux' ]]; then
     SAMPI_PATH=$HOME/SAMPi
 else
-    SAMPI_PATH=$HOME/Dropbox/Work/SAMPi/src
-fi
-
-# Send all output from this daemon to the system logger if enabled
-if [[ $ENABLE_LOGGING == 1 ]]; then 
-    exec 1> >(logger -t "SAMPiD") 2> >(logger -t "SAMPiD_ERROR")
+    SAMPI_PATH=$HOME/Dropbox/Work/SAMPi
 fi
 
 main "$@"
