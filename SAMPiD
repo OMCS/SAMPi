@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# SAMPiD - Daemon for the SAMPi ECR tool (Last Modified 14/10/2015)
+# SAMPiD - Daemon for the SAMPi ECR tool (Last Modified 15/10/2015)
 #
 # This software should be set to run on every boot and will ensure that 
 # the main Perl program which reads data via serial, logs it and prepares
@@ -18,8 +18,6 @@
 ENABLE_LOGGING=1
 LOCKDIR=/tmp/SAMPiD.lock
 DAYS_TO_KEEP_DATA=90
-USER=shopcsv
-SERVER=wenzelsextranet.co.uk
 
 cleanup()
 {
@@ -51,6 +49,16 @@ main()
         exec 1> >(logger -t "SAMPiD") 2> >(logger -t "SAMPiD_ERROR")
     fi
 
+    # Read variables from the config file
+    CONFIG="$SAMPI_PATH/config/sampid.cfg"
+    if [ -r $CONFIG ]; then
+        USER=$(head -n1 $CONFIG | cut -f2 -d '=')
+        SERVER=$(head -n2 $CONFIG | tail -n1 | cut -f2 -d '=')
+    else
+        echo "config/sampid.cfg not found, terminating"
+        exit 1
+    fi
+
     # Main loop
     while true; do
         # Attempt to run SAMPi.pl (in the background) in case it is not already running or has crashed
@@ -80,10 +88,10 @@ uploadData()
     echo "Uploading ECR data from $UPLOAD_PATH to server..."
 
     # rsync uses the archive, update (only send modified files), preserve time and verbose flags
-    # rsync -autv $UPLOAD_PATH/* $USER@$SERVER
+    rsync -autv $UPLOAD_PATH/* $USER@$SERVER:/
 
-    # Update the local copy of the shops.csv file if required
-    # rsync -autv $USER@$SERVER:/shops.csv $(dirname $SAMPI_PATH)
+    # Update the local config directory if required
+    rsync -autv $USER@$SERVER:/config/* $SAMPI_PATH/config/
 }
 
 # Remove any data older than the threshold to preserve space on the device
