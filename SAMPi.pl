@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 #
-# SAMPi - SAM4S ECR data reader, parser and logger (Last Modified 14/10/2015)
+# SAMPi - SAM4S ECR data reader, parser and logger (Last Modified 17/10/2015) 
 #
 # This software runs in the background on a suitably configured Raspberry Pi,
 # reads from a connected SAM4S ECR via serial connection, extracts various data,
@@ -54,7 +54,7 @@ Readonly my $MONITOR_MODE_ENABLED   => FALSE;  # If enabled, SAMPi will not pars
 Readonly my $UPDATE_HOOK_ENABLED    => FALSE; # Attempt to call the postUpdate() function once on start if TRUE
 Readonly my $LOGGING_ENABLED        => TRUE; # Enable or disable logging info / warnings / errors to file
 Readonly my $VERBOSE_PARSER_ENABLED => TRUE; # If enabled, the parser will print information to STDOUT as it runs
-Readonly my $DEBUG_ENABLED          => TRUE; # If enabled, read current time from latest serial header instead of clock
+Readonly my $DEBUG_ENABLED          => FALSE; # If enabled, read current time from latest serial header instead of clock
 
 Readonly my $DIRECTORY_SEPARATOR        => ($^O =~ /Win/) ? "\\" : "/"; # Ternary operator used for brevity
 Readonly my $CURRENT_VERSION_PATH       => abs_path($0);
@@ -828,8 +828,11 @@ sub normaliseStr
 {
     my ($rawString) = @_;
 
+    # Remove blank spaces and the "SAMPi" prefix
     $rawString =~ s/[^\w]//gx;
+    $rawString =~ s/SAMPi//igx;
 
+    # Return lowercase representation
     return lc($rawString);
 }
 
@@ -882,11 +885,12 @@ sub getOutputFileName
         # Normalise the strings for comparison
         $shopName        = normaliseStr($shopName);
         $currentHostname = normaliseStr($currentHostname);
-
-        # Check if the hostname contains the shop name
-        if ($currentHostname =~ /$shopName/x)
+        
+        # Check if normalised hostname exactly matches normalised shop name
+        if ($currentHostname =~ /^$shopName$/x)
         {
             $matchedID = $shopID;
+            last;
         }
     }
 
