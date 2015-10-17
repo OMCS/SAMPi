@@ -50,13 +50,13 @@ use File::Touch; # Perl implementation of the UNIX 'touch' command
 
 Readonly our $VERSION => 1.0;
 
-Readonly my $MONITOR_MODE_ENABLED   => FALSE;  # If enabled, SAMPi will not parse serial data and will simply store it
+Readonly my $MONITOR_MODE_ENABLED   => FALSE; # If enabled, SAMPi will not parse serial data and will simply store it
 Readonly my $UPDATE_HOOK_ENABLED    => FALSE; # Attempt to call the postUpdate() function once on start if TRUE
-Readonly my $LOGGING_ENABLED        => TRUE; # Enable or disable logging info / warnings / errors to file
-Readonly my $VERBOSE_PARSER_ENABLED => TRUE; # If enabled, the parser will print information to STDOUT as it runs
-Readonly my $DEBUG_ENABLED          => FALSE; # If enabled, read current time from latest serial header instead of clock
+Readonly my $LOGGING_ENABLED        => TRUE;  # Enable or disable logging info / warnings / errors to file
+Readonly my $VERBOSE_PARSER_ENABLED => FALSE; # If enabled, the parser will print information to STDOUT as it runs
+Readonly my $DEBUG_ENABLED          => FALSE;  # If enabled, read current time from latest serial header instead of clock
 
-Readonly my $DIRECTORY_SEPARATOR        => ($^O =~ /Win/) ? "\\" : "/"; # Ternary operator used for brevity
+Readonly my $DIRECTORY_SEPARATOR        => ($^O =~ /Win/i) ? "\\" : "/"; # Ternary operator used for brevity
 Readonly my $CURRENT_VERSION_PATH       => abs_path($0);
 Readonly my $LATEST_VERSION_PATH        => File::Spec->tmpdir() . $DIRECTORY_SEPARATOR . "SAMPi.pl";
 Readonly my $UPDATE_CHECK_DELAY_MINUTES => 20; # Check for updates every 20 minutes in idle mode
@@ -89,8 +89,12 @@ Readonly my @EVENT_DISPATCH_TABLE =>
         regexp => qr/REPORT/x, # Contains "REPORT"
     },
     {
-        parser => \&parseCancelOrReprint,
-        regexp => qr/(^CANCEL|REPRINT)/x, # Begins with "CANCEL" or contains "REPRINT"
+        parser => \&parseCancel,
+        regexp => qr/^CANCEL/x, # Begins with "CANCEL"
+    },
+    {
+        parser => \&parseReprint,
+        regexp => qr/REPRINT/x, # Contains "REPRINT"
     },
     {
         parser => \&parseRefund,
@@ -456,7 +460,7 @@ sub parseHeader
     my ($headerLine) = @_;
 
     # Make a copy of the current transaction data so we can revert if requried
-    %hourlyTransactionDataCopy = %{ clone(\%hourlyTransactionData) };
+    saveState();
 
     # Print out the most recently processed transaction if we are debugging
     if ($previousEvent == $PARSER_EVENTS{TRANSACTION})
@@ -648,17 +652,18 @@ sub parseNoSale
 }
 
 # This function parses cancelled or reprinted transactions and handles resetting the current state of the data
-sub parseCancelOrReprint
+sub parseCancel
 {
-    unless ($currentEvent == $PARSER_EVENTS{OTHER})
-    {
-        # Reset the state of the hourly transaction data to how it was before the current transaction
-        logMsg("Ignoring cancelled or reprinted transaction at $currentEventTime");
-        %hourlyTransactionData = %hourlyTransactionDataCopy;
-        $transactionCount--;
-        $hourlyTransactionData{"Customer Count"} = $transactionCount;
-        $currentEvent = $PARSER_EVENTS{OTHER};
-    }
+    logMsg("Ignoring cancelled transaction at $currentEventTime");
+    loadState(); # Reset to previously saved state
+
+    return;
+}
+
+sub parseReprint
+{
+    logMsg("Ignoring reprinted transaction at $currentEventTime");
+    loadState();
 
     return;
 }
@@ -711,6 +716,32 @@ sub parseLine
     # If nothing in the dispatch table matched, we could be dealing with a transaction
     # More validation is performed within the function to check if this is the case
     parseTransaction($dataLine);
+
+    return;
+}
+
+# This function saves the current state of the hourly transaction data in case
+# it needs to be returned to after reading a cancelled or reprinted transaction
+sub saveState
+{
+    %hourlyTransactionDataCopy = %{ clone(\%hourlyTransactionData) };
+
+    return;
+}
+
+# This function loads a previously saved state, this function is used for
+# returning to the state after the previous transaction after a refund or
+# cancellation has been detected 
+sub loadState
+{
+    unless ($currentEvent == $PARSER_EVENTS{OTHER})
+    {
+        # Reset the state of the hourly transaction data to how it was before the current transaction
+        %hourlyTransactionData = %hourlyTransactionDataCopy;
+        $transactionCount--;
+        $hourlyTransactionData{"Customer Count"} = $transactionCount;
+        $currentEvent = $PARSER_EVENTS{OTHER};
+    }
 
     return;
 }
@@ -869,7 +900,7 @@ sub getOutputFileName
 
     # Open the shops file in read mode
     ## no critic qw(RequireBriefOpen)
-    unless (open ($shopIDFile, '<', "config/plu.txt"))
+    unless (open ($shopIDFile, '<', "config/shops.csv"))
     {
         logMsg("Error opening $shopFilePath: $!");
         die "Error opening $shopFilePath: $!";
