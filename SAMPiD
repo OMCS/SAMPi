@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# SAMPiD - Daemon for the SAMPi ECR tool (Last Modified 15/10/2015)
+# SAMPiD - Daemon for the SAMPi ECR tool (Last Modified 19/10/2015)
 #
 # This software should be set to run on every boot and will ensure that 
 # the main Perl program which reads data via serial, logs it and prepares
@@ -84,13 +84,34 @@ main()
 # Copy every new or modified file in the ecr_data directory to the server
 uploadData()
 {
-    UPLOAD_PATH=$SAMPI_PATH/ecr_data
-    echo "Uploading ECR data from $UPLOAD_PATH to server..."
+    RELATIVE_DATA_PATH=./ecr_data
+    echo "Uploading ECR data from $RELATIVE_DATA_PATH to server..."
 
     # rsync uses the archive, update (only send modified files), preserve time and verbose flags
-    rsync -autv $UPLOAD_PATH/* $USER@$SERVER:/
+    rsync -autv $RELATIVE_DATA_PATH/* $USER@$SERVER:/
 
-    # Update the local config directory if required
+    # If rsync did not work, we fall back to inefficient SFTP
+    if [[ $? -gt 0 ]]; then
+        echo "Falling back to SFTP, attempting upload..."
+        find $RELATIVE_DATA_PATH -newer ./config/last_update >> newFiles 
+
+        for updatedFile in $(cat ./newfiles); do
+            sftp -pqb /dev/stdin $USER@$SERVER <<END
+            put $updatedFile 
+            bye
+END
+        done
+
+        if [[ $? -gt 0 ]]; then
+            echo "SFTP upload to $USER@$SERVER failed"
+        else
+            touch ./config/last_update
+        fi
+    fi
+
+    rm newFiles
+
+    # Update the local config directory if required, no fallback required as this isn't crucial
     rsync -autv $USER@$SERVER:/config/* $SAMPI_PATH/config/
 }
 
@@ -98,7 +119,7 @@ uploadData()
 removeOldData()
 {
     echo "Removing data generated more than $DAYS_TO_KEEP_DATA days ago"
-    find $UPLOAD_PATH -mtime +$DAYS_TO_KEEP_DATA -exec rm {} \;
+    find $RELATIVE_DATA_PATH -mtime +$DAYS_TO_KEEP_DATA -exec rm {} \;
 }
 
 # Set the correct path to SAMPi.pl depending on if we are in production or testing
