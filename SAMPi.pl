@@ -1102,6 +1102,7 @@ sub processData
         # checking periodically for an updated version of this software
         while (!$storeIsOpen)
         {
+            my $sleepTime = 0;
             logMsg("Checking for updates every $UPDATE_CHECK_DELAY_MINUTES minutes");
 
             # Check if the current script and latest script on the server differ
@@ -1117,7 +1118,18 @@ sub processData
             else
             {
                 logMsg("No update found, will try again later");
-                sleep($UPDATE_CHECK_DELAY_MINUTES * 60); # The parameter must be in seconds
+                while ($sleepTime < $UPDATE_CHECK_DELAY_MINUTES * 60)
+                {
+                    $storeIsOpen = isBusinessHours();
+
+                    if ($storeIsOpen)
+                    {
+                        last;
+                    }
+
+                    sleep(1);
+                    $sleepTime++;
+                }
             }
 
             $storeIsOpen = isBusinessHours();
