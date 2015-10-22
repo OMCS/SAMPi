@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 #
-# SAMPi - SAM4S ECR data reader, parser and logger (Last Modified 19/10/2015)
+# SAMPi - SAM4S ECR data reader, parser and logger (Last Modified 22/10/2015)
 #
 # This software runs in the background on a suitably configured Raspberry Pi,
 # reads from a connected SAM4S ECR via serial connection, extracts various data,
@@ -140,7 +140,6 @@ my $csvFile; # CSV file descriptor, used for output
 my $serialLog; # Serial log descriptor (monitor mode only)
 my $dataOpen = FALSE; # Determines if serial log file has been opened (monitor mode only)
 my $serialPort; # Serial port file descriptor, used for input
-my $savedData = FALSE; # Indicates if we have saved data for the hour yet
 
 # Updates and Idle Mode
 my $postUpdateExecuted; # Semaphore filename referred to in postUpdate()
@@ -153,6 +152,7 @@ my $previousEventTime = "0"; # Stores the time of the previous event (in  a stri
 my $currentEvent = $PARSER_EVENTS{OTHER}; # Tracks the current type of data being parsed
 my $currentEventTime = "0"; # Store the time of the current event (in a string)
 my $currentEventHour = "0"; # Just the hour portion of the current event time
+my $lastSavedHour = "0"; # Store the hour we last saved when reading time from the system clock
 my $transactionCount = 0; # Counter for number of transactions per hour / day
 
 # The following hash will contain the list of recognised PLUs, these will be read in from a file
@@ -245,7 +245,7 @@ sub logMsg
 sub initialiseSerialPort
 {
     # 8N1 with software flow control by default
-    Readonly my $SERIAL_PORT => ($^O =~ /Linux/i) ? "/dev/ttyUSB0" : "/dev/ttys004"; # This varies depending on current OS
+    Readonly my $SERIAL_PORT => ($^O =~ /Linux/i) ? "/dev/ttyUSB0" : "/dev/ttys008"; # This varies depending on current OS
     Readonly my $BPS => 9600;
     Readonly my $DATA_BITS => 8;
     Readonly my $STOP_BITS => 1;
@@ -423,15 +423,19 @@ sub postUpdate
 # and clears data structures 
 sub saveData
 {
-    # Set the last transaction time
-    $hourlyTransactionData{"Last Transaction"} = $previousEventTime;
+    # Guard against saving on startup
+    if ($currentEventTime ne "0")
+    {
+        # Set the last transaction time
+        $hourlyTransactionData{"Last Transaction"} = $previousEventTime;
 
-    # Write the collected data to the CSV file and clear the data structure
-    logMsg("Generating CSV for " . $hourlyTransactionData{"Hours"});
-    generateCSV();
-    clearData();
+        # Write the collected data to the CSV file and clear the data structure
+        logMsg("Generating CSV for " . $hourlyTransactionData{"Hours"});
+        generateCSV();
+        clearData();
+    }
 
-    $savedData = TRUE;
+    (undef, undef, $lastSavedHour) = localtime();
 
     return;
 }
@@ -799,7 +803,6 @@ sub clearData
 
     # Reset counts and flags
     $transactionCount = 0;
-    $savedData = FALSE;
 
     return;
 }
@@ -1045,7 +1048,8 @@ sub processData
         # Populate the PLUList structure with the acceptable PLU values
         while (my $pluLine = <$pluFile>)
         {
-            chomp($pluLine);
+            chomp $pluLine;
+            next if ($pluLine =~ /^\s+$/x); # Ignore blank lines
             $PLUList{$pluLine} = "0";
         }
 
@@ -1082,13 +1086,9 @@ sub processData
             if (!$DEBUG_ENABLED)
             {
                 my (undef, undef, $currentHour) = localtime();
-
-                if ($currentEventHour ne "0" and $currentEventHour ne $currentHour)
+                if ($currentHour > $lastSavedHour)
                 {
-                    if (!$savedData)
-                    {
-                        saveData();
-                    }
+                    saveData();
                 }
             }
 
