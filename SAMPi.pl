@@ -59,7 +59,7 @@ Readonly my $DEBUG_ENABLED          => FALSE;  # If enabled, read current time f
 Readonly my $DIRECTORY_SEPARATOR        => ($^O =~ /^Win/ix) ? "\\" : "/"; # Ternary operator used for brevity
 Readonly my $CURRENT_VERSION_PATH       => abs_path($0);
 Readonly my $LATEST_VERSION_PATH        => File::Spec->tmpdir() . $DIRECTORY_SEPARATOR . "SAMPi.pl";
-Readonly my $UPDATE_CHECK_DELAY_MINUTES => 20; # Check for updates every 20 minutes in idle mode
+Readonly my $UPDATE_CHECK_DELAY_MINUTES => 120; # Check for updates every two hours in idle mode
 
 # Define opening and closing hours
 Readonly my $STORE_OPENING_HOUR_24 => 6;
