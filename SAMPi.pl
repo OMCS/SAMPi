@@ -129,6 +129,10 @@ Readonly my @TRANSACTION_DISPATCH_TABLE =>
     {
         parser => \&adjustCardTotal, # Also a wrapper for adjustTotal()
         regexp => qr/(CHEQUE|CARD)/x, # Contains "CHEQUE" or "CARD"
+    },
+    {
+        parser => \&adjustDiscount, # Handle discounts
+        regexp => qr/^AMOUNT/x, # Contains "AMOUNT", represents a discount 
     }
 );
 
@@ -154,6 +158,7 @@ my $currentEventTime = "0"; # Store the time of the current event (in a string)
 my $currentEventHour = "0"; # Just the hour portion of the current event time
 my $lastSavedHour = "0"; # Store the hour we last saved when reading time from the system clock
 my $transactionCount = 0; # Counter for number of transactions per hour / day
+my $currentPLU; # Store the current PLU, used when applying discounts 
 
 # The following hash will contain the list of recognised PLUs, these will be read in from a file
 # We tie this hash to preserve the insertion order for later use in CSV columns, saves front-end work
@@ -567,7 +572,7 @@ sub adjustTotal
 # Handle Cash Total
 sub adjustCashTotal
 {
-    (my $cashTotal) = @_;
+    my ($cashTotal) = @_;
     adjustTotal($cashTotal, "Cash");
     return;
 }
@@ -580,11 +585,21 @@ sub adjustChange
     return;
 }
 
-# Handle Card Total
+# Handle the card total field
 sub adjustCardTotal
 {
-    (my $cardTotal) = @_;
+    my ($cardTotal) = @_;
     adjustTotal($cardTotal, "Credit Cards");
+    return;
+}
+
+# This function accounts for discounted products and ensures PLU totals correctly add up to the overall total
+sub adjustDiscount
+{
+    my ($discountValue) = @_;
+    print "Adjusting $currentPLU total for discount of $discountValue\n";
+    $hourlyTransactionData{"PLU"}{$currentPLU} += $discountValue;
+
     return;
 }
 
@@ -599,7 +614,14 @@ sub parseTransaction
     if ($currentEvent != $PARSER_EVENTS{HEADER} and $currentEvent != $PARSER_EVENTS{TRANSACTION}
         or index($transactionLine, $CURRENCY_SYMBOL) == -1)
     {
-        return;
+        unless ($transactionLine =~ /^AMOUNT/x) # Discount values do not have a currency symbol
+        {
+            return;
+        }
+        else
+        {
+            $transactionLine =~ s/-/$CURRENCY_SYMBOL-/gx; # Add the currency symbol so it works with the regular parser
+        }
     }  
     
     $currentEvent = $PARSER_EVENTS{TRANSACTION};
@@ -631,6 +653,7 @@ sub parseTransaction
     {
         # Add to the appropriate column in the data
         $hourlyTransactionData{"PLU"}{$transactionKey} += $transactionValue; 
+        $currentPLU = $transactionKey;
     }
 
     else
@@ -1064,7 +1087,19 @@ sub processData
     {
         # Read ECR data over serial and process it during business hours
         while ($storeIsOpen)
-        {
+        {   
+            # If we are not in debug mode we will check the system clock 
+            # rather than the time in the headers of the serial data
+            # This ensures new data is saved every hour regardless of input
+            if (!$DEBUG_ENABLED)
+            {
+                my (undef, undef, $currentHour) = localtime();
+                if ($currentHour > $lastSavedHour)
+                {
+                    saveData();
+                }
+            }
+
             # Wait until we have read a line of data 
             if (my $serialDataLine = $serialPort->lookfor()) 
             {
@@ -1080,18 +1115,6 @@ sub processData
                 parseLine($serialDataLine);
             }
             
-            # If we are not in debug mode we will check the system clock 
-            # rather than the time in the headers of the serial data
-            # This ensures new data is saved every hour regardless of input
-            if (!$DEBUG_ENABLED)
-            {
-                my (undef, undef, $currentHour) = localtime();
-                if ($currentHour > $lastSavedHour)
-                {
-                    saveData();
-                }
-            }
-
             $storeIsOpen = isBusinessHours();
 
             # 200ms delay to save CPU cycles
