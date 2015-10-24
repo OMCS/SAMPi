@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# SAMPiD - Daemon for the SAMPi ECR tool (Last Modified 23/10/2015)
+# SAMPiD - Daemon for the SAMPi ECR tool (Last Modified 24/10/2015)
 #
 # This software should be set to run on every boot and will ensure that 
 # the main Perl program which reads data via serial, logs it and prepares
@@ -73,6 +73,9 @@ main()
             /usr/bin/perl $SAMPI_PATH/SAMPi.pl > /dev/null 2>&1 &
         fi
 
+        # Attempt to restart the network if it has gone down
+        verifyNetwork
+
         # Attempt to upload the currently collected data via SFTP using rsync
         # This ensures that only the modified or new files are uploaded to the
         # server
@@ -84,6 +87,18 @@ main()
 
         sleep 300 # Wait for 5 minutes
     done
+}
+
+verifyNetwork()
+{
+    ping -c4 8.8.8.8 > /dev/null
+ 
+    if [ $? != 0 ]; then
+        echo "No network connection, restarting wlan0"
+        /sbin/ifdown 'wlan0'
+        sleep 5
+        /sbin/ifup --force 'wlan0'
+    fi
 }
 
 # Copy every new or modified file in the ecr_data directory to the server
