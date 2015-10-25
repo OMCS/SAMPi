@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 #
-# SAMPi - SAM4S ECR data reader, parser and logger (Last Modified 23/10/2015)
+# SAMPi - SAM4S ECR data reader, parser and logger (Last Modified 24/10/2015)
 #
 # This software runs in the background on a suitably configured Raspberry Pi,
 # reads from a connected SAM4S ECR via serial connection, extracts various data,
@@ -32,6 +32,7 @@ use Data::Dumper; # Allows printing transaction data to screen for debugging
 use Device::SerialPort; # Serial I/O 
 use Digest::SHA1 qw(sha1_base64); # SHA1 checksum library
 use LWP::Simple qw(getstore is_error $ua); # Used to download updates
+use Storable; # Persistent hourly data
 use Sys::Hostname; # Acquire hostname 
 use Sys::RunAlone; # This module ensures only one instance of this software runs concurrently
 use Text::Trim; # Remove leading and trailing whitespace
@@ -51,6 +52,7 @@ use File::Touch; # Perl implementation of the UNIX 'touch' command
 Readonly our $VERSION => 1.0;
 
 Readonly my $MONITOR_MODE_ENABLED   => FALSE; # If enabled, SAMPi will not parse serial data and will simply store it
+Readonly my $STORE_DATA_ENABLED     => TRUE;  # If enabled, SAMPi will store data for analysis, in addition to parsing it 
 Readonly my $UPDATE_HOOK_ENABLED    => FALSE; # Attempt to call the postUpdate() function once on start if TRUE
 Readonly my $LOGGING_ENABLED        => TRUE;  # Enable or disable logging info / warnings / errors to file
 Readonly my $VERBOSE_PARSER_ENABLED => FALSE; # If enabled, the parser will print information to STDOUT as it runs
@@ -468,7 +470,7 @@ sub parseHeader
 {
     my ($headerLine) = @_;
 
-    # Make a copy of the current transaction data so we can revert if requried
+    # Make a copy of the current transaction data so we can revert if required
     saveState();
 
     # Print out the most recently processed transaction if we are debugging
@@ -753,6 +755,12 @@ sub saveState
 {
     %hourlyTransactionDataCopy = %{ clone(\%hourlyTransactionData) };
 
+    # Serialise the data structure so we can resume from here in case of a short-term power failure, etc.
+    if ($currentEventHour ne "0")
+    {
+        store(\%hourlyTransactionDataCopy, "hourlyData_$currentEventHour.dat");
+    }
+
     return;
 }
 
@@ -824,8 +832,11 @@ sub clearData
         }
     }
 
-    # Reset counts and flags
+    # Reset customer count
     $transactionCount = 0;
+
+    # Remove serialised data for the previous hour
+    unlink "hourlyData_" . ($currentEventHour-1) . ".dat";
 
     return;
 }
@@ -1088,16 +1099,34 @@ sub processData
         # Read ECR data over serial and process it during business hours
         while ($storeIsOpen)
         {   
+            my $currentHour;
+
+            if (! $DEBUG_ENABLED)
+            {
+                (undef, undef, $currentHour) = localtime();
+            }
+
+            else
+            {
+                $currentHour = $currentEventHour;
+            }
+
+            # Load serialised data if we are recovering from a power failure or crash within the same hour
+            # that the data was originally saved in.
+            if (-e "hourlyData_$currentHour.dat")
+            {
+                logMsg("Loading partial hourly transaction data for $currentHour:00 to " . ($currentHour+1) . ":00");
+                %hourlyTransactionData = %{ retrieve("hourlyData_$currentHour.dat") };        
+                unlink "hourlyData_$currentHour.dat";
+            }
+
             # If we are not in debug mode we will check the system clock 
             # rather than the time in the headers of the serial data
+            # to determine when to call the function to save the hourly data
             # This ensures new data is saved every hour regardless of input
-            if (!$DEBUG_ENABLED)
+            if (!$DEBUG_ENABLED && $currentHour > $lastSavedHour)
             {
-                my (undef, undef, $currentHour) = localtime();
-                if ($currentHour > $lastSavedHour)
-                {
-                    saveData();
-                }
+                saveData();
             }
 
             # Wait until we have read a line of data 
@@ -1108,7 +1137,12 @@ sub processData
                 {
                     # Save the raw data to the log file
                     storeLine("$serialDataLine\n");
-                    next;
+                    next; # Do not run the parser
+                }
+
+                if ($STORE_DATA_ENABLED)
+                {
+                    storeLine("$serialDataLine\n");
                 }
 
                 # Parse the line of data
