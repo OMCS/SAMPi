@@ -160,6 +160,7 @@ my $currentEventTime = "0"; # Store the time of the current event (in a string)
 my $currentEventHour = "0"; # Just the hour portion of the current event time
 my $lastSavedHour = "0"; # Store the hour we last saved when reading time from the system clock
 my $transactionCount = 0; # Counter for number of transactions per hour / day
+my $firstRun = TRUE; # Flag which determines if this is the first time we are gong through the main loop
 my $currentPLU; # Store the current PLU, used when applying discounts 
 
 # The following hash will contain the list of recognised PLUs, these will be read in from a file
@@ -1113,11 +1114,16 @@ sub processData
 
             # Load serialised data if we are recovering from a power failure or crash within the same hour
             # that the data was originally saved in.
-            if (-e "hourlyData_$currentHour.dat")
+            if ($firstRun)
             {
-                logMsg("Loading partial hourly transaction data for $currentHour:00 to " . ($currentHour+1) . ":00");
-                %hourlyTransactionData = %{ retrieve("hourlyData_$currentHour.dat") };        
-                unlink "hourlyData_$currentHour.dat";
+                if (-e "hourlyData_$currentHour.dat")
+                {
+                    logMsg("Loading partial hourly transaction data for $currentHour:00 to " . ($currentHour+1) . ":00");
+                    %hourlyTransactionData = %{ retrieve("hourlyData_$currentHour.dat") };        
+                    unlink "hourlyData_$currentHour.dat";
+                }
+
+                $firstRun = FALSE;
             }
 
             # If we are not in debug mode we will check the system clock 
