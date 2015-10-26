@@ -49,7 +49,7 @@ use File::Touch; # Perl implementation of the UNIX 'touch' command
 
 # Globally accessible constants and variables #
 
-Readonly our $VERSION => 1.0;
+Readonly our $VERSION => 1.1;
 
 Readonly my $MONITOR_MODE_ENABLED   => FALSE; # If enabled, SAMPi will not parse serial data and will simply store it
 Readonly my $STORE_DATA_ENABLED     => TRUE;  # If enabled, SAMPi will store data for analysis, in addition to parsing it 
@@ -301,7 +301,12 @@ sub isBusinessHours
     # Return true if we are within business hours
     if ($currentHour >= $STORE_OPENING_HOUR_24 and $currentHour <= $STORE_CLOSING_HOUR_24)
     {
-        $idleMode = FALSE;
+        if ($idleMode == TRUE)
+        {
+            logMsg("Exiting Idle Mode");
+            $idleMode = FALSE;
+        }
+
         return TRUE;
     }
 
@@ -319,6 +324,7 @@ sub isBusinessHours
             clearData(); # Clear the stored data
             $transactionCount = 0; # Reset the daily transaction count
             unlink <hourlyData*>; # Delete any stray hourly data
+            logMsg("Entering Idle Mode");
             $idleMode = TRUE;
         }
 
@@ -860,7 +866,7 @@ sub clearData
     $transactionCount = 0;
 
     # Remove serialised data for the previous hour
-    unlink "hourlyData_" . ($currentEventHour-1) . ".dat";
+    unlink "hourlyData_$currentEventHour.dat";
 
     return;
 }
@@ -1149,11 +1155,10 @@ sub processData
                 $firstRun = FALSE;
             }
 
-            # If we are not in debug mode we will check the system clock 
-            # rather than the time in the headers of the serial data
-            # to determine when to call the function to save the hourly data
-            # This ensures new data is saved every hour regardless of input
-            if (!$DEBUG_ENABLED && $currentHour > $lastSavedHour)
+            # If we are not in debug mode we will check the system clock rather than the time in the headers of the serial data
+            # to determine when to call the function to save the hourly data. This ensures new data is saved every hour 
+            # regardless of input. We check to make sure we do not save during a transaction so the data is not fragmented
+            if (!$DEBUG_ENABLED && $currentHour > $lastSavedHour && $currentEvent != $PARSER_EVENTS{TRANSACTION})
             {
                 saveData();
             }
