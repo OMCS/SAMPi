@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 #
-# SAMPi - SAM4S ECR data reader, parser and logger (Last Modified 24/10/2015)
+# SAMPi - SAM4S ECR data reader, parser and logger (Last Modified 25/10/2015)
 #
 # This software runs in the background on a suitably configured Raspberry Pi,
 # reads from a connected SAM4S ECR via serial connection, extracts various data,
@@ -134,7 +134,7 @@ Readonly my @TRANSACTION_DISPATCH_TABLE =>
     },
     {
         parser => \&adjustDiscount, # Handle discounts
-        regexp => qr/^AMOUNT/x, # Contains "AMOUNT", represents a discount 
+        regexp => qr/^AMOUNT/x, # Begins with "AMOUNT", represents a discount 
     }
 );
 
@@ -213,6 +213,13 @@ sub getCurrentDate
     return @currentDate;
 }
 
+# Utility function to return the current hour in 24-hour format
+sub getCurrentHour
+{
+    my (undef, undef, $currentHour) = localtime();
+    return $currentHour;
+}
+
 # Simple function to print logging messages  with a timestamp to a file and / or stdout 
 sub logMsg
 {
@@ -289,7 +296,7 @@ sub initialiseSerialPort
 # This will affect the behaviour of the script, it will either be in data gathering mode or idle / update mode
 sub isBusinessHours
 {
-    my (undef, undef, $currentHour) = localtime();
+    my $currentHour = getCurrentHour();
 
     # Return true if we are within business hours
     if ($currentHour >= $STORE_OPENING_HOUR_24 and $currentHour <= $STORE_CLOSING_HOUR_24)
@@ -311,6 +318,7 @@ sub isBusinessHours
 
             clearData(); # Clear the stored data
             $transactionCount = 0; # Reset the daily transaction count
+            unlink <hourlyData*>; # Delete any stray hourly data
             $idleMode = TRUE;
         }
 
@@ -443,7 +451,7 @@ sub saveData
         clearData();
     }
 
-    (undef, undef, $lastSavedHour) = localtime();
+    $lastSavedHour = getCurrentHour();
 
     return;
 }
@@ -471,16 +479,22 @@ sub parseHeader
 {
     my ($headerLine) = @_;
 
+    # Check if the current hour has changed...
+    my $currentHour = getCurrentHour();
+
+    if (!$DEBUG_ENABLED && $currentHour > $lastSavedHour)
+    {
+        # If so, save the data gathered before moving to the new hour
+        saveData();
+    }
+
     # Make a copy of the current transaction data so we can revert if required
     saveState();
 
     # Print out the most recently processed transaction if we are debugging
-    if ($previousEvent == $PARSER_EVENTS{TRANSACTION})
+    if ($previousEvent == $PARSER_EVENTS{TRANSACTION} && $VERBOSE_PARSER_ENABLED)
     {
-        if ($VERBOSE_PARSER_ENABLED)
-        {
-            print Dumper(\%hourlyTransactionData);
-        }
+        print Dumper(\%hourlyTransactionData);
     }
 
     # Extract the event time into the $1 reserved variable
@@ -514,6 +528,13 @@ sub parseHeader
         # If no first transaction has been logged for the current hour
         if ($hourlyTransactionData{"First Transaction"} eq "0")
         {
+            # If SAMPi and the ECR disagree about the hour and we are not in debug mode
+            if ($currentHour ne $currentEventHour && !$DEBUG_ENABLED)
+            {
+                # Use the SAMPi time which should be more accurate as it will take daylight savings into account
+                $currentEventHour = $currentHour;
+            }
+
             # Set the 'Hours' field accordingly, in the format "HH.00 - HH+1.00"
             my $nextHour = $currentEventHour+1;
             $hourlyTransactionData{"Hours"} = "$currentEventHour.00-$nextHour.00";
@@ -1102,9 +1123,9 @@ sub processData
         {   
             my $currentHour;
 
-            if (! $DEBUG_ENABLED)
+            if (!$DEBUG_ENABLED)
             {
-                (undef, undef, $currentHour) = localtime();
+                $currentHour = getCurrentHour();
             }
 
             else
