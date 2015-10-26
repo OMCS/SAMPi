@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 #
-# SAMPi - SAM4S ECR data reader, parser and logger (Last Modified 25/10/2015)
+# SAMPi - SAM4S ECR data reader, parser and logger (Last Modified 26/10/2015)
 #
 # This software runs in the background on a suitably configured Raspberry Pi,
 # reads from a connected SAM4S ECR via serial connection, extracts various data,
@@ -533,6 +533,8 @@ sub parseHeader
             {
                 # Use the SAMPi time which should be more accurate as it will take daylight savings into account
                 $currentEventHour = $currentHour;
+                my (undef, $minute) = split(':', $currentEventTime, 2);
+                $currentEventTime = $currentEventHour . ":" . $minute;
             }
 
             # Set the 'Hours' field accordingly, in the format "HH.00 - HH+1.00"
