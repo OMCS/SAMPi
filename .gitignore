@@ -24,3 +24,4 @@ doc/Specification.txt
 *.run
 *.csv
 misc/
+config/
