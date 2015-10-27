@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 #
-# SAMPi - SAM4S ECR data reader, parser and logger (Last Modified 26/10/2015)
+# SAMPi - SAM4S ECR data reader, parser and logger (Last Modified 27/10/2015)
 #
 # This software runs in the background on a suitably configured Raspberry Pi,
 # reads from a connected SAM4S ECR via serial connection, extracts various data,
@@ -49,14 +49,14 @@ use File::Touch; # Perl implementation of the UNIX 'touch' command
 
 # Globally accessible constants and variables #
 
-Readonly our $VERSION => 1.1;
+Readonly our $VERSION => 1.2;
 
 Readonly my $MONITOR_MODE_ENABLED   => FALSE; # If enabled, SAMPi will not parse serial data and will simply store it
 Readonly my $STORE_DATA_ENABLED     => TRUE;  # If enabled, SAMPi will store data for analysis, in addition to parsing it 
 Readonly my $UPDATE_HOOK_ENABLED    => FALSE; # Attempt to call the postUpdate() function once on start if TRUE
 Readonly my $LOGGING_ENABLED        => TRUE;  # Enable or disable logging info / warnings / errors to file
 Readonly my $VERBOSE_PARSER_ENABLED => FALSE; # If enabled, the parser will print information to STDOUT as it runs
-Readonly my $DEBUG_ENABLED          => FALSE;  # If enabled, read current time from latest serial header instead of clock
+Readonly my $DEBUG_ENABLED          => (@ARGV > 0) ? TRUE : FALSE; # If enabled, will read time from serial data
 
 Readonly my $DIRECTORY_SEPARATOR        => ($^O =~ /^Win/ix) ? "\\" : "/"; # Ternary operator used for brevity
 Readonly my $CURRENT_VERSION_PATH       => abs_path($0);
@@ -85,6 +85,10 @@ Readonly my @EVENT_DISPATCH_TABLE =>
     {
         parser => \&parseHeader,
         regexp => qr/^\d{1,2}\/\d{2}\/\d{4}/x, # Begins with a date in [d]d/mm/yyyy format
+    },
+    {
+        parser => \&parseFooter,
+        regexp => qr/^CLERK/x, # Begins with "CLERK", delimits transactions
     },
     {
         parser => \&parseReport,
@@ -135,10 +139,6 @@ Readonly my @TRANSACTION_DISPATCH_TABLE =>
     {
         parser => \&adjustDiscount, # Handle discounts
         regexp => qr/^AMOUNT/x, # Begins with "AMOUNT", represents a discount 
-    },
-    {
-        parser => \&delimitTransaction, # Notify when finished processing a transaction
-        regexp => qr/^CLERK/x, # Begins with "CLERK"
     }
 );
 
@@ -221,7 +221,8 @@ sub getCurrentDate
 sub getCurrentHour
 {
     my (undef, undef, $currentHour) = localtime();
-    return $currentHour;
+
+    return sprintf("%02d", $currentHour); # Return with leading zero if hour < 10
 }
 
 # Simple function to print logging messages  with a timestamp to a file and / or stdout 
@@ -327,7 +328,6 @@ sub isBusinessHours
 
             clearData(); # Clear the stored data
             $transactionCount = 0; # Reset the daily transaction count
-            unlink <hourlyData*>; # Delete any stray hourly data
             logMsg("Entering Idle Mode");
             $idleMode = TRUE;
         }
@@ -455,6 +455,16 @@ sub saveData
         # Set the last transaction time
         $hourlyTransactionData{"Last Transaction"} = $previousEventTime;
 
+        # Ensure the value of card transactions is equal to TOTAL - CASH
+        my $difference = $hourlyTransactionData{"Total Takings"} - $hourlyTransactionData{"Cash"};
+
+        # Effectively, a difference of zero (required due to floating point values)
+        if ($difference > 1E-8)
+        {
+            $difference = sprintf("%.2f", $difference);
+            $hourlyTransactionData{"Credit Cards"} = $difference;
+        }
+
         # Write the collected data to the CSV file and clear the data structure
         logMsg("Generating CSV for " . $hourlyTransactionData{"Hours"});
         generateCSV();
@@ -483,8 +493,8 @@ sub setPreviousEvent
 }
 
 # This function is part of the parser, it processes headers
-# Each header represents a separate event (transaction or report) and includes a 
-# timestamp which is extracted and stored for later use
+# Each header represents a separate event (transaction or report)
+# and includes a timestamp which is extracted and stored for later use
 sub parseHeader
 {
     my ($headerLine) = @_;
@@ -513,13 +523,6 @@ sub parseHeader
     # Check that the extraction succeeded 
     if ($1)
     {
-        # Keep track of the previous event time if there is one, ignoring reports
-        if ($currentEventTime ne "0" and $currentEvent != $PARSER_EVENTS{OTHER})
-        {
-            # Used to set the last transaction time for each hour
-            $previousEventTime = $currentEventTime;
-        }
-
         $currentEventTime = $1; 
         $currentEventHour = substr($currentEventTime, 0, 2);
 
@@ -542,13 +545,13 @@ sub parseHeader
             if ($currentHour ne $currentEventHour && !$DEBUG_ENABLED)
             {
                 # Use the SAMPi time which should be more accurate as it will take daylight savings into account
-                $currentEventHour = $currentHour;
-                my (undef, $minute) = split(':', $currentEventTime, 2);
-                $currentEventTime = $currentEventHour . ":" . $minute;
+                $currentEventHour = $currentHour; # Set the currentEventHour to the system clock hour
+                my (undef, $minute) = split(':', $currentEventTime, 2); # Split $currentEventTime at colon to get event minute
+                $currentEventTime = $currentEventHour . ":" . $minute; # Set $currentEventTime to the correct hour and minute
             }
 
-            # Set the 'Hours' field accordingly, in the format "HH.00 - HH+1.00"
-            my $nextHour = $currentEventHour+1;
+            # Set the 'Hours' field accordingly, in the format "HH.00 - (HH+1).00"
+            my $nextHour = sprintf("%02d", $currentEventHour+1);
             $hourlyTransactionData{"Hours"} = "$currentEventHour.00-$nextHour.00";
 
             # Store the time of the first transaction
@@ -566,6 +569,22 @@ sub parseHeader
     
     # Set the current parser state
     $currentEvent = $PARSER_EVENTS{HEADER};
+
+    return;
+}
+
+# This function resets the current event state at the end of each transaction
+# and stores metadata about the transaction which has just been processed
+sub parseFooter
+{
+    # Keep track of the previous event time if there is one, ignoring reports
+    if ($currentEventTime ne "0" and $currentEvent != $PARSER_EVENTS{OTHER})
+    {
+        # Used to set the last transaction time for each hour
+        $previousEventTime = $currentEventTime;
+    }
+
+    $currentEvent = $PARSER_EVENTS{OTHER};
 
     return;
 }
@@ -635,14 +654,6 @@ sub adjustDiscount
     my ($discountValue) = @_;
     print "Adjusting $currentPLU total for discount of $discountValue\n";
     $hourlyTransactionData{"PLU"}{$currentPLU} += $discountValue;
-
-    return;
-}
-
-# This function resets the current event state at the end of each transaction
-sub delimitTransaction
-{
-    $currentEvent = $PARSER_EVENTS{OTHER};
 
     return;
 }
@@ -878,7 +889,7 @@ sub clearData
     $transactionCount = 0;
 
     # Remove serialised data for the previous hour
-    unlink "hourlyData_$currentEventHour.dat";
+    unlink <hourlyData*>; 
 
     return;
 }
