@@ -135,6 +135,10 @@ Readonly my @TRANSACTION_DISPATCH_TABLE =>
     {
         parser => \&adjustDiscount, # Handle discounts
         regexp => qr/^AMOUNT/x, # Begins with "AMOUNT", represents a discount 
+    },
+    {
+        parser => \&delimitTransaction, # Notify when finished processing a transaction
+        regexp => qr/^CLERK/x, # Begins with "CLERK"
     }
 );
 
@@ -631,6 +635,14 @@ sub adjustDiscount
     my ($discountValue) = @_;
     print "Adjusting $currentPLU total for discount of $discountValue\n";
     $hourlyTransactionData{"PLU"}{$currentPLU} += $discountValue;
+
+    return;
+}
+
+# This function resets the current event state at the end of each transaction
+sub delimitTransaction
+{
+    $currentEvent = $PARSER_EVENTS{OTHER};
 
     return;
 }
@@ -1157,7 +1169,7 @@ sub processData
 
             # If we are not in debug mode we will check the system clock rather than the time in the headers of the serial data
             # to determine when to call the function to save the hourly data. This ensures new data is saved every hour 
-            # regardless of input. We check to make sure we do not save during a transaction so the data is not fragmented
+            # regardless of input. We check to make sure we do not save mid-transaction so the data is not fragmented
             if (!$DEBUG_ENABLED && $currentHour > $lastSavedHour && $currentEvent != $PARSER_EVENTS{TRANSACTION})
             {
                 saveData();
