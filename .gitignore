@@ -25,3 +25,4 @@ doc/Specification.txt
 *.csv
 misc/
 config/
+doc/*Proposal*
