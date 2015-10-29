@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 #
-# SAMPi - SAM4S ECR data reader, parser and logger (Last Modified 27/10/2015)
+# SAMPi - SAM4S ECR data reader, parser and logger (Last Modified 29/10/2015)
 #
 # This software runs in the background on a suitably configured Raspberry Pi,
 # reads from a connected SAM4S ECR via serial connection, extracts various data,
@@ -62,6 +62,7 @@ Readonly my $DIRECTORY_SEPARATOR        => ($^O =~ /^Win/ix) ? "\\" : "/"; # Ter
 Readonly my $CURRENT_VERSION_PATH       => abs_path($0);
 Readonly my $LATEST_VERSION_PATH        => File::Spec->tmpdir() . $DIRECTORY_SEPARATOR . "SAMPi.pl";
 Readonly my $UPDATE_CHECK_DELAY_MINUTES => 120; # Check for updates every two hours in idle mode
+Readonly my $TRANSACTION_DELAY_SECONDS  => 300; # Seconds to wait for a header in a new hour before saving (used to detect last hour of data)
 
 # Define opening and closing hours
 Readonly my $STORE_OPENING_HOUR_24 => 6;
@@ -75,7 +76,8 @@ Readonly my %PARSER_EVENTS =>
 (
     "HEADER" => 1,
     "TRANSACTION" => 2,
-    "OTHER" => 3
+    "OTHER" => 3,
+    "FOOTER" => 4
 );
 
 # Dispatch table (array of hashes) to simplify parsing and remove the need for long if-else chains
@@ -88,7 +90,7 @@ Readonly my @EVENT_DISPATCH_TABLE =>
     },
     {
         parser => \&parseFooter,
-        regexp => qr/^CLERK/x, # Begins with "CLERK", delimits transactions
+        regexp => qr/^CLERK/x, # Begins with "CLERK", delimits transactions (although reprints are printed beneath)
     },
     {
         parser => \&parseReport,
@@ -166,6 +168,8 @@ my $lastSavedHour = "0"; # Store the hour we last saved when reading time from t
 my $transactionCount = 0; # Counter for number of transactions per hour / day
 my $firstRun = TRUE; # Flag which determines if this is the first time we are gong through the main loop
 my $currentPLU; # Store the current PLU, used when applying discounts 
+my $invalidEvent = FALSE; # Flag which prevents reprints and cancellations from being counted as the first / last event for an hour
+my $lastTransactionTime = 0; # Stores time of last transaction, used to save when no more data is forthcoming 
 
 # The following hash will contain the list of recognised PLUs, these will be read in from a file
 # We tie this hash to preserve the insertion order for later use in CSV columns, saves front-end work
@@ -217,7 +221,7 @@ sub getCurrentDate
     return @currentDate;
 }
 
-# Utility function to return the current hour in 24-hour format
+# Utility function to return the current hour from the system clock in 24-hour format
 sub getCurrentHour
 {
     my (undef, undef, $currentHour) = localtime();
@@ -276,7 +280,7 @@ sub initialiseSerialPort
     $serialPort = Device::SerialPort->new($SERIAL_PORT);
 
     # If there is an error initialising the serial port, print a warning and terminate
-    if (!defined $serialPort)
+    unless (defined $serialPort)
     {
         logMsg("Error opening serial port $SERIAL_PORT: $!\n"); 
         die "Error opening serial port $SERIAL_PORT: $!\n";
@@ -318,7 +322,7 @@ sub isBusinessHours
     # Or false otherwise
     else
     {
-        if (!$idleMode)
+        unless ($idleMode)
         {
             if (defined $csvFile)
             {
@@ -326,9 +330,10 @@ sub isBusinessHours
                 $csvOpen = FALSE;
             }
 
+            logMsg("Entering Idle Mode");
             clearData(); # Clear the stored data
             $transactionCount = 0; # Reset the daily transaction count
-            logMsg("Entering Idle Mode");
+            unlink <hourlyData*>;  # Remove any stray hourly data 
             $idleMode = TRUE;
         }
 
@@ -408,7 +413,7 @@ sub postUpdate
     # Enter whatever code you need to execute in the $postUpdateCode variable below
     my $postUpdateCode = "";
 
-    if (!$postUpdateCode)
+    unless ($postUpdateCode)
     {
         return;
     }
@@ -456,7 +461,7 @@ sub saveData
         $hourlyTransactionData{"Last Transaction"} = $previousEventTime;
 
         # Ensure the value of card transactions is equal to TOTAL - CASH
-        my $difference = $hourlyTransactionData{"Total Takings"} - $hourlyTransactionData{"Cash"};
+        my $difference = $hourlyTransactionData{"Total Takings"} - $hourlyTransactionData{"Cash"} - $hourlyTransactionData{"Credit Cards"};
 
         # Effectively, a difference of zero (required due to floating point values)
         if ($difference > 1E-8)
@@ -471,7 +476,8 @@ sub saveData
         clearData();
     }
 
-    $lastSavedHour = getCurrentHour();
+    # Set the last saved hour (used to determine when to save next)
+    $lastSavedHour = $currentEventHour+1;
 
     return;
 }
@@ -499,15 +505,6 @@ sub parseHeader
 {
     my ($headerLine) = @_;
 
-    # Check if the current hour has changed...
-    my $currentHour = getCurrentHour();
-
-    if (!$DEBUG_ENABLED && $currentHour > $lastSavedHour)
-    {
-        # If so, save the data gathered before moving to the new hour
-        saveData();
-    }
-
     # Make a copy of the current transaction data so we can revert if required
     saveState();
 
@@ -515,7 +512,15 @@ sub parseHeader
     if ($previousEvent == $PARSER_EVENTS{TRANSACTION} && $VERBOSE_PARSER_ENABLED)
     {
         print Dumper(\%hourlyTransactionData);
+    }    
+    
+    if ($currentEventTime ne "0" && $currentEvent != $PARSER_EVENTS{OTHER} && !$invalidEvent)
+    {
+        # Used to set the last transaction time for each hour
+        $previousEventTime = $currentEventTime;
     }
+
+    $invalidEvent = FALSE; # Clear invalid flag
 
     # Extract the event time into the $1 reserved variable
     $headerLine =~ /([0-9][0-9]:[0-9][0-9])/x;
@@ -523,33 +528,23 @@ sub parseHeader
     # Check that the extraction succeeded 
     if ($1)
     {
+        $lastTransactionTime = time();
+
         $currentEventTime = $1; 
         $currentEventHour = substr($currentEventTime, 0, 2);
 
         # When we have finished gathering data for the hour, we need to take it and write it out to the CSV file
-        # If we are debugging, we use the hours in the serial headers to indicate the current hour 
-        # so we don't have to wait until the actual hour changes to generate CSV data 
-        if ($DEBUG_ENABLED)
+        # If we are debugging, we only use the hours in the serial headers to indicate the current hour  so that
+        # we don't have to wait until the clock hour changes to generate CSV data, in production we check both times
+        # If the current hour is different to the hour of the most recent transaction and this is not the beginning of the day
+        if ($currentEventHour ne substr($hourlyTransactionData{"Hours"}, 0, 2) and $hourlyTransactionData{"Hours"} ne "0")
         {
-            # If the current hour is different to the hour of the most recent transaction and this is not the beginning of the day
-            if ($currentEventHour ne substr($hourlyTransactionData{"Hours"}, 0, 2) and $hourlyTransactionData{"Hours"} ne "0")
-            {
-                saveData(); 
-            }
+            saveData(); 
         }
 
         # If no first transaction has been logged for the current hour
         if ($hourlyTransactionData{"First Transaction"} eq "0")
         {
-            # If SAMPi and the ECR disagree about the hour and we are not in debug mode
-            if ($currentHour ne $currentEventHour && !$DEBUG_ENABLED)
-            {
-                # Use the SAMPi time which should be more accurate as it will take daylight savings into account
-                $currentEventHour = $currentHour; # Set the currentEventHour to the system clock hour
-                my (undef, $minute) = split(':', $currentEventTime, 2); # Split $currentEventTime at colon to get event minute
-                $currentEventTime = $currentEventHour . ":" . $minute; # Set $currentEventTime to the correct hour and minute
-            }
-
             # Set the 'Hours' field accordingly, in the format "HH.00 - (HH+1).00"
             my $nextHour = sprintf("%02d", $currentEventHour+1);
             $hourlyTransactionData{"Hours"} = "$currentEventHour.00-$nextHour.00";
@@ -558,9 +553,6 @@ sub parseHeader
             $hourlyTransactionData{"First Transaction"} = $currentEventTime;           
         }
     }
-
-    # Update customer (transaction) count in the hourly data structure
-    $hourlyTransactionData{"Customer Count"} = $transactionCount;
 
     if ($VERBOSE_PARSER_ENABLED)
     {
@@ -573,18 +565,21 @@ sub parseHeader
     return;
 }
 
-# This function resets the current event state at the end of each transaction
-# and stores metadata about the transaction which has just been processed
+# This function is called when detecting a footer
+# It notifies the parser that it is no longer processing 
+# a transaction and may save when required
 sub parseFooter
 {
-    # Keep track of the previous event time if there is one, ignoring reports
-    if ($currentEventTime ne "0" and $currentEvent != $PARSER_EVENTS{OTHER})
+
+    unless ($currentEvent == $PARSER_EVENTS{OTHER})
     {
-        # Used to set the last transaction time for each hour
-        $previousEventTime = $currentEventTime;
+        $currentEvent = $PARSER_EVENTS{FOOTER};
     }
 
-    $currentEvent = $PARSER_EVENTS{OTHER};
+    if ($VERBOSE_PARSER_ENABLED)
+    {
+        print "FOOTER AT $currentEventTime\n";
+    }    
 
     return;
 }
@@ -733,7 +728,7 @@ sub parseNoSale
     return;
 }
 
-# This function parses cancelled or reprinted transactions and handles resetting the current state of the data
+# This function parses cancelled transactions and handles resetting the current state of the data
 sub parseCancel
 {
     logMsg("Ignoring cancelled transaction at $currentEventTime");
@@ -742,6 +737,7 @@ sub parseCancel
     return;
 }
 
+# Similar to the above 
 sub parseReprint
 {
     logMsg("Ignoring reprinted transaction at $currentEventTime");
@@ -822,12 +818,14 @@ sub saveState
 # cancellation has been detected 
 sub loadState
 {
-    unless ($currentEvent == $PARSER_EVENTS{OTHER})
+    # Reset the state of the hourly transaction data to how it was before the current transaction
+    $invalidEvent = TRUE;
+    %hourlyTransactionData = %hourlyTransactionDataCopy;
+    $transactionCount--;
+    $hourlyTransactionData{"Customer Count"} = $transactionCount;
+
+    unless ($currentEvent == $PARSER_EVENTS{FOOTER})
     {
-        # Reset the state of the hourly transaction data to how it was before the current transaction
-        %hourlyTransactionData = %hourlyTransactionDataCopy;
-        $transactionCount--;
-        $hourlyTransactionData{"Customer Count"} = $transactionCount;
         $currentEvent = $PARSER_EVENTS{OTHER};
     }
 
@@ -844,7 +842,7 @@ sub storeLine
     my @date = getCurrentDate();
     my $serialLogFilePath = $ENV{'HOME'} . $DIRECTORY_SEPARATOR . "serial_log_" . $date[2] . ".dat"; 
 
-    if (!$dataOpen)
+    unless ($dataOpen)
     {
         unless (open ($serialLog, '>>', $serialLogFilePath))
         {
@@ -894,11 +892,11 @@ sub clearData
     return;
 }
 
-# This function writes the stored data to CSV format for uploading 
+# This function writes the stored data to CSV format for later upload to the frontend server via rsync or SFTP
 sub generateCSV
 {
     # Create an appropriately named CSV file and open it in append mode if it does not already exist
-    if (!$csvOpen)
+    unless ($csvOpen)
     {
         initialiseOutputFile();
     }
@@ -1018,7 +1016,7 @@ sub getOutputFileName
     close $shopIDFile;
 
     # If we couldn't find a match, set $matchedID to "OTHER" and log a warning
-    if (!$matchedID)
+    unless ($matchedID)
     {
         $matchedID = "UNKNOWN";
         logMsg("No match found for '$currentHostname' in shops.csv, setting \$matchedID to 'UNKNOWN'");
@@ -1047,7 +1045,7 @@ sub initialiseOutputFile
     my $pluFile; # PLU filehandle
 
     # If the file does not exist, create it and add the correct headings
-    if (! -e $outputFilePath)
+    unless (-e $outputFilePath)
     {
         logMsg("Creating CSV file $outputFilePath");
 
@@ -1118,7 +1116,7 @@ sub initialiseOutputFile
 # in CSV format for upload. If called outside of business hours it will periodically check for updates
 sub processData
 {
-    if (!$serialPort)
+    unless ($serialPort)
     {
         croak("Serial port has not been configured, call initialiseSerialPort() before this function\n");
     }
@@ -1152,22 +1150,12 @@ sub processData
         # Read ECR data over serial and process it during business hours
         while ($storeIsOpen)
         {   
-            my $currentHour;
-
-            if (!$DEBUG_ENABLED)
-            {
-                $currentHour = getCurrentHour();
-            }
-
-            else
-            {
-                $currentHour = $currentEventHour;
-            }
-
             # Load serialised data if we are recovering from a power failure or crash within the same hour
             # that the data was originally saved in.
             if ($firstRun)
             {
+                my $currentHour = getCurrentHour();
+
                 if (-e "hourlyData_$currentHour.dat")
                 {
                     logMsg("Loading partial hourly transaction data for $currentHour:00 to " . ($currentHour+1) . ":00");
@@ -1178,12 +1166,24 @@ sub processData
                 $firstRun = FALSE;
             }
 
-            # If we are not in debug mode we will check the system clock rather than the time in the headers of the serial data
-            # to determine when to call the function to save the hourly data. This ensures new data is saved every hour 
+            # If we are not in debug mode we check the system clock as well as the header time in parseHeader() to
+            # determine when to call the function to save the hourly data. This ensures new data is saved every hour 
             # regardless of input. We check to make sure we do not save mid-transaction so the data is not fragmented
-            if (!$DEBUG_ENABLED && $currentHour > $lastSavedHour && $currentEvent != $PARSER_EVENTS{TRANSACTION})
+            unless ($DEBUG_ENABLED)
             {
-                saveData();
+                # Get current UNIX time so we can compare with the time of the last transaction
+                my $currentTime = time();
+
+                # Last hour to compare with the lastSaved hour and prevent saving twice in one hour
+                my $currentHour = getCurrentHour();
+
+                # Ensure that the current system clock hour is different to the last saved time, we are not in the midst of a transaction and
+                # that the last transaction was detected more than a configurable amount of time ago - implying that no new data is coming
+                # for the previous hour as it was the last of the day
+                if ( ($currentTime - $lastTransactionTime) > $TRANSACTION_DELAY_SECONDS && $currentHour > $lastSavedHour && $currentEvent == $PARSER_EVENTS{FOOTER})
+                {
+                    saveData();
+                }
             }
 
             # Wait until we have read a line of data 
@@ -1197,6 +1197,7 @@ sub processData
                     next; # Do not run the parser
                 }
 
+                # Store the data if data logging is enabled
                 if ($STORE_DATA_ENABLED)
                 {
                     storeLine("$serialDataLine\n");
