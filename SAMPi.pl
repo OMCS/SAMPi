@@ -169,7 +169,7 @@ my $transactionCount = 0; # Counter for number of transactions per hour / day
 my $firstRun = TRUE; # Flag which determines if this is the first time we are gong through the main loop
 my $currentPLU; # Store the current PLU, used when applying discounts 
 my $invalidEvent = FALSE; # Flag which prevents reprints and cancellations from being counted as the first / last event for an hour
-my $lastTransactionTime = 0; # Stores time of last transaction, used to save when no more data is forthcoming 
+my $prevTransactionTime = 0; # Stores time of most recently read transaction, checked in order to save at the end of the day
 
 # The following hash will contain the list of recognised PLUs, these will be read in from a file
 # We tie this hash to preserve the insertion order for later use in CSV columns, saves front-end work
@@ -528,7 +528,7 @@ sub parseHeader
     # Check that the extraction succeeded 
     if ($1)
     {
-        $lastTransactionTime = time();
+        $prevTransactionTime = time();
 
         $currentEventTime = $1; 
         $currentEventHour = substr($currentEventTime, 0, 2);
@@ -1180,7 +1180,7 @@ sub processData
                 # Ensure that the current system clock hour is different to the last saved time, we are not in the midst of a transaction and
                 # that the last transaction was detected more than a configurable amount of time ago - implying that no new data is coming
                 # for the previous hour as it was the last of the day
-                if ( ($currentTime - $lastTransactionTime) > $TRANSACTION_DELAY_SECONDS && $currentHour > $lastSavedHour && $currentEvent == $PARSER_EVENTS{FOOTER})
+                if ( ($currentTime - $prevTransactionTime) > $TRANSACTION_DELAY_SECONDS && $currentHour > $lastSavedHour && $currentEvent != $PARSER_EVENTS{TRANSACTION})
                 {
                     saveData();
                 }
