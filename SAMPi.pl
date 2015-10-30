@@ -62,7 +62,7 @@ Readonly my $DIRECTORY_SEPARATOR        => ($^O =~ /^Win/ix) ? "\\" : "/"; # Ter
 Readonly my $CURRENT_VERSION_PATH       => abs_path($0);
 Readonly my $LATEST_VERSION_PATH        => File::Spec->tmpdir() . $DIRECTORY_SEPARATOR . "SAMPi.pl";
 Readonly my $UPDATE_CHECK_DELAY_MINUTES => 120; # Check for updates every two hours in idle mode
-Readonly my $TRANSACTION_DELAY_SECONDS  => 300; # Seconds to wait for a header in a new hour before saving (used to detect last hour of data)
+Readonly my $TRANSACTION_DELAY_SECONDS  => 600; # Seconds to wait for a header in a new hour before saving previous hour (used to detect last hour of data)
 
 # Define opening and closing hours
 Readonly my $STORE_OPENING_HOUR_24 => 6;
@@ -151,6 +151,7 @@ my $csvOpen = FALSE; # Flag as above
 my $csvFile; # CSV file descriptor, used for output
 my $serialLog; # Serial log descriptor (monitor mode only)
 my $dataOpen = FALSE; # Determines if serial log file has been opened (monitor mode only)
+my $serialLogFilePath; # File path for logged serial data, cleared daily when SAMPi goes into idle mode
 my $serialPort; # Serial port file descriptor, used for input
 
 # Updates and Idle Mode
@@ -330,6 +331,13 @@ sub isBusinessHours
                 $csvOpen = FALSE;
             }
 
+            if (defined $serialLog)
+            {
+                close $serialLog;
+                unlink $serialLogFilePath;
+                $dataOpen = FALSE;
+            }
+
             logMsg("Entering Idle Mode");
             clearData(); # Clear the stored data
             $transactionCount = 0; # Reset the daily transaction count
@@ -475,8 +483,8 @@ sub saveData
         clearData();
     }
 
-    # Set the last saved hour (used to determine when to save next)
-    $lastSavedHour = $currentEventHour+1;
+    # Set the last saved hour (indicates that we do not need to save again until the hour changes)
+    $lastSavedHour = $currentEventHour;
 
     return;
 }
@@ -659,8 +667,8 @@ sub parseTransaction
     my ($transactionLine) = @_;
 
     # Ensure we are expecting a transaction and the line contains a price
-    if ($currentEvent != $PARSER_EVENTS{HEADER} and $currentEvent != $PARSER_EVENTS{TRANSACTION}
-        or index($transactionLine, $CURRENCY_SYMBOL) == -1)
+    if ($currentEvent != $PARSER_EVENTS{HEADER} && $currentEvent != $PARSER_EVENTS{TRANSACTION} ||
+        index($transactionLine, $CURRENCY_SYMBOL) == -1)
     {
         unless ($transactionLine =~ /^AMOUNT/x) # Discount values do not have a currency symbol
         {
@@ -838,7 +846,7 @@ sub storeLine
     my ($dataLine) = @_;
 
     my @date = getCurrentDate();
-    my $serialLogFilePath = $ENV{'HOME'} . $DIRECTORY_SEPARATOR . "serial_log_" . $date[2] . ".dat"; 
+    $serialLogFilePath = $ENV{'HOME'} . $DIRECTORY_SEPARATOR . "serial_log_" . $date[2] . ".dat"; 
 
     unless ($dataOpen)
     {
@@ -1186,7 +1194,8 @@ sub processData
                 # for the previous hour as it was the last of the day
                 if ( ($currentTime - $prevTransactionTime) > $TRANSACTION_DELAY_SECONDS && $currentHour > $lastSavedHour && $currentEvent != $PARSER_EVENTS{TRANSACTION})
                 {
-                    unless ($prevTransactionTime == 0)
+                    # Prevent saving on startup or when we have no new transactions to save
+                    unless ($prevTransactionTime == 0 || $hourlyTransactionData{"Total Takings"} eq "0")
                     {
                         saveData();
                     }
