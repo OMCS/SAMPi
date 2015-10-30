@@ -8,7 +8,7 @@
 #
 # This software works in conjunction with the SAMPiD daemon to
 # handle uploading CSV data files, removal of data older than 
-# a configurable threshold and other miscellaneous tasks
+# a configurable threshold and other supporting tasks
 #
 # SAMPi.pl can be automatically updated by uploading a newer version
 # to a configurable update URL
@@ -458,6 +458,7 @@ sub saveData
     if ($currentEventTime ne "0")
     {
         # Set the last transaction time
+        logMsg("Setting last transaction to $previousEventTime, current event time is $currentEventTime");
         $hourlyTransactionData{"Last Transaction"} = $previousEventTime;
 
         # Ensure the value of card transactions is equal to TOTAL - CASH
@@ -477,6 +478,7 @@ sub saveData
     }
 
     # Set the last saved hour (used to determine when to save next)
+    logMsg("saveData() called, setting \$lastSavedHour to ", $currentEventHour+1, "\n");
     $lastSavedHour = $currentEventHour+1;
 
     return;
@@ -1182,7 +1184,10 @@ sub processData
                 # for the previous hour as it was the last of the day
                 if ( ($currentTime - $prevTransactionTime) > $TRANSACTION_DELAY_SECONDS && $currentHour > $lastSavedHour && $currentEvent != $PARSER_EVENTS{TRANSACTION})
                 {
-                    saveData();
+                    unless ($prevTransactionTime == 0)
+                    {
+                        saveData();
+                    }
                 }
             }
 
