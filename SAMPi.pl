@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 #
-# SAMPi - SAM4S ECR data reader, parser and logger (Last Modified 29/10/2015)
+# SAMPi - SAM4S ECR data reader, parser and logger (Last Modified 30/10/2015)
 #
 # This software runs in the background on a suitably configured Raspberry Pi,
 # reads from a connected SAM4S ECR via serial connection, extracts various data,
@@ -49,7 +49,7 @@ use File::Touch; # Perl implementation of the UNIX 'touch' command
 
 # Globally accessible constants and variables #
 
-Readonly our $VERSION => 1.2;
+Readonly our $VERSION => 1.3;
 
 Readonly my $MONITOR_MODE_ENABLED   => FALSE; # If enabled, SAMPi will not parse serial data and will simply store it
 Readonly my $STORE_DATA_ENABLED     => TRUE;  # If enabled, SAMPi will store data for analysis, in addition to parsing it 
@@ -458,16 +458,14 @@ sub saveData
     if ($currentEventTime ne "0")
     {
         # Set the last transaction time
-        logMsg("Setting last transaction to $previousEventTime, current event time is $currentEventTime");
         $hourlyTransactionData{"Last Transaction"} = $previousEventTime;
 
         # Ensure the value of card transactions is equal to TOTAL - CASH
         my $difference = $hourlyTransactionData{"Total Takings"} - $hourlyTransactionData{"Cash"} - $hourlyTransactionData{"Credit Cards"};
 
-        # Effectively, a difference of zero (required due to floating point values)
+        # If the totals do not equal zero (approximate equality test required due to floating point values)
         if ($difference > 1E-8)
         {
-            $difference = sprintf("%.2f", $difference);
             $hourlyTransactionData{"Credit Cards"} = $difference;
         }
 
@@ -478,7 +476,6 @@ sub saveData
     }
 
     # Set the last saved hour (used to determine when to save next)
-    logMsg("saveData() called, setting \$lastSavedHour to ", $currentEventHour+1, "\n");
     $lastSavedHour = $currentEventHour+1;
 
     return;
@@ -572,7 +569,6 @@ sub parseHeader
 # a transaction and may save when required
 sub parseFooter
 {
-
     unless ($currentEvent == $PARSER_EVENTS{OTHER})
     {
         $currentEvent = $PARSER_EVENTS{FOOTER};
@@ -922,8 +918,14 @@ sub generateCSV
             foreach my $PLU (keys %{ $hourlyTransactionData{$transactionDataKey} })
             {
                 $transactionData = $hourlyTransactionData{$transactionDataKey}{$PLU};
-                print $csvFile "$transactionData,";
+                print $csvFile sprintf("%.2f,", $transactionData);
             }
+        }
+
+        # Ensure total values are neatly rounded to two decimal places
+        elsif ($transactionDataKey =~ m/(Credit\sCards|Cash|Total\sTakings)/x) 
+        {
+            print $csvFile sprintf("%.2f,", $transactionData);
         }
 
         # Process other values
