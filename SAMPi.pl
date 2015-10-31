@@ -1241,10 +1241,9 @@ sub processData
                 {
                     sleep(60);
                     $sleepTime += 60;
+                    $storeIsOpen = isBusinessHours();
                 }
             }
-
-            $storeIsOpen = isBusinessHours();
         }
     }
 
