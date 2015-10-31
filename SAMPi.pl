@@ -169,12 +169,12 @@ my $lastSavedHour = "0"; # Store the hour we last saved when reading time from t
 my $transactionCount = 0; # Counter for number of transactions per hour / day
 my $firstRun = TRUE; # Flag which determines if this is the first time we are gong through the main loop
 my $currentPLU; # Store the current PLU, used when applying discounts 
-my $invalidEvent = FALSE; # Flag which prevents reprints and cancellations from being counted as the first / last event for an hour
+my $previousEventInvalid = FALSE; # Flag which prevents reprints and cancellations from being counted as the first / last event
 my $prevTransactionTime = 0; # Stores time of most recently read transaction, checked in order to save at the end of the day
 
 # The following hash will contain the list of recognised PLUs, these will be read in from a file
 # We tie this hash to preserve the insertion order for later use in CSV columns, saves front-end work
-my %PLUList;
+my  %PLUList;
 tie %PLUList, "Tie::IxHash";
 
 # The following data structure holds data for each of the columns that will eventually comprise the CSV file
@@ -198,12 +198,12 @@ tie %hourlyTransactionData, "Tie::IxHash";
 );
 
 # Copy for reverting to if required
-my %hourlyTransactionDataCopy;
+my  %hourlyTransactionDataCopy;
 tie %hourlyTransactionDataCopy, "Tie::IxHash";
 
 # Functions #
 
-# Utility function which returns the current date in yyyymmdd as an array
+# Utility function which returns the current date in [yyyy][mm][dd] as an array
 sub getCurrentDate
 {
     my @timestamp = localtime();
@@ -212,12 +212,7 @@ sub getCurrentDate
     my $currentMonth = $timestamp[4] + 1; # Months from localtime() are zero-indexed
     my $currentDay   = $timestamp[3];
 
-    if ($currentDay < 10)
-    {
-        $currentDay = "0" . $currentDay; # Pad day
-    }
-
-    my @currentDate = ($currentYear, $currentMonth, $currentDay);
+    my @currentDate = ($currentYear, $currentMonth, sprintf("%02d", $currentDay)); # Pad day
 
     return @currentDate;
 }
@@ -240,7 +235,7 @@ sub logMsg
     # Write message to file if logging is enabled
     if ($LOGGING_ENABLED)
     {
-        if ($logOpen == FALSE)
+        unless ($logOpen)
         {
             my $logFileName = "sampi.log";
 
@@ -309,9 +304,9 @@ sub isBusinessHours
     my $currentHour = getCurrentHour();
 
     # Return true if we are within business hours
-    if ($currentHour >= $STORE_OPENING_HOUR_24 and $currentHour <= $STORE_CLOSING_HOUR_24)
+    if ($currentHour >= $STORE_OPENING_HOUR_24 && $currentHour <= $STORE_CLOSING_HOUR_24)
     {
-        if ($idleMode == TRUE)
+        if ($idleMode)
         {
             logMsg("Exiting Idle Mode");
             $idleMode = FALSE;
@@ -421,17 +416,17 @@ sub postUpdate
     # Enter whatever code you need to execute in the $postUpdateCode variable below
     my $postUpdateCode = "";
 
-    unless ($postUpdateCode)
+    unless ($postUpdateCode) # Ensure $postUpdateCode is not empty
     {
         return;
     }
 
-    # Generate checksum for requested postUpdate code, this prevents it running more than once
+    # Generate checksum for requested post-update code, this prevents it running more than once per version
     my $checksum = sha1_base64($postUpdateCode);
     $checksum =~ s/$DIRECTORY_SEPARATOR/-/xg; # Replace anything matching the directory separator
     $postUpdateExecuted = dirname($CURRENT_VERSION_PATH) . $DIRECTORY_SEPARATOR . $checksum . ".run";
 
-    if (not -f $postUpdateExecuted)
+    unless (-f $postUpdateExecuted) # Unless postUpdate() has been called before (semaphore exists)
     {
         logMsg("postUpdate() call requested, executing postUpdateCode");
 
@@ -446,7 +441,7 @@ sub postUpdate
             logMsg("Error in postUpdateCode: $@");
         }
 
-        touch $postUpdateExecuted;
+        touch $postUpdateExecuted; # Create semaphore to prevent repeat execution
     }
 
     else
@@ -463,7 +458,7 @@ sub postUpdate
 sub saveData
 {
     # Guard against saving on startup
-    if ($currentEventTime ne "0")
+    unless ($currentEventTime eq "0")
     {
         # Set the last transaction time
         $hourlyTransactionData{"Last Transaction"} = $previousEventTime;
@@ -505,7 +500,7 @@ sub setPreviousEvent
     return;
 }
 
-# This function is part of the parser, it processes headers
+# This function is part of the parser, it processes headers.
 # Each header represents a separate event (transaction or report)
 # and includes a timestamp which is extracted and stored for later use
 sub parseHeader
@@ -515,19 +510,20 @@ sub parseHeader
     # Make a copy of the current transaction data so we can revert if required
     saveState();
 
-    # Print out the most recently processed transaction if we are debugging
+    # Print out the most recently processed transaction if we are in verbose mode
     if ($previousEvent == $PARSER_EVENTS{TRANSACTION} && $VERBOSE_PARSER_ENABLED)
     {
         print Dumper(\%hourlyTransactionData);
     }    
     
-    if ($currentEventTime ne "0" && $currentEvent != $PARSER_EVENTS{OTHER} && !$invalidEvent)
+    # Store the time of the previous event if there is one, as long as it was a valid transaction
+    if ($currentEventTime ne "0" && $currentEvent != $PARSER_EVENTS{OTHER} && !$previousEventInvalid)
     {
         # Used to set the last transaction time for each hour
         $previousEventTime = $currentEventTime;
     }
 
-    $invalidEvent = FALSE; # Clear invalid flag
+    $previousEventInvalid = FALSE; # Clear invalid flag
 
     # Extract the event time into the $1 reserved variable
     $headerLine =~ /([0-9][0-9]:[0-9][0-9])/x;
@@ -666,23 +662,17 @@ sub parseTransaction
 {
     my ($transactionLine) = @_;
 
-    # Ensure we are expecting a transaction and the line contains a price
+    # Ensure we are expecting a transaction and the line contains a price
     if ($currentEvent != $PARSER_EVENTS{HEADER} && $currentEvent != $PARSER_EVENTS{TRANSACTION} ||
-        index($transactionLine, $CURRENCY_SYMBOL) == -1)
+        index($transactionLine, $CURRENCY_SYMBOL) == -1) 
     {
-        unless ($transactionLine =~ /^AMOUNT/x) # Discount values do not have a currency symbol
-        {
-            return;
-        }
-        else
-        {
-            $transactionLine =~ s/-/$CURRENCY_SYMBOL-/gx; # Add the currency symbol so it works with the regular parser
-        }
-    }  
+            return unless ($transactionLine =~ /^AMOUNT/x); # Discount values do not have a currency symbol
+            $transactionLine =~ s/-/$CURRENCY_SYMBOL-/gx; # Add the currency symbol so the line works with the parser
+    }
     
     $currentEvent = $PARSER_EVENTS{TRANSACTION};
 
-    # Separate the data into a key (PLU) and a value (price) to use as input for the second-stage parser
+    # Separate the data into a key (PLU or label) and a value (e.g. price or total) to use as input for the transaction parser
     my ($transactionKey, $transactionValue) = split($CURRENCY_SYMBOL, $transactionLine, 2);
 
     # Search the dispatch table for a suitable parser for the given $transactionKey
@@ -691,23 +681,22 @@ sub parseTransaction
     {
         if ($transactionKey =~ $transactionKeyType->{regexp}) 
         {
-            # Call the appropriate parsing function with the transaction value as a parameter
+            # Call the appropriate parsing function with the label's value as the parameter
             $transactionKeyType->{parser}->($transactionValue);
             return;
         }
     }
 
-    # If no key-specific parsing function was found, we are processing a simple "PLU => VALUE" transaction
-    # We need to perform validation and ensure that the key is a valid PLU and then add to the total for
-    # The correct product category for that PLU if validation is successful 
-    
+    # If no key-specific parsing function was found, we are processing a simple "PLU => COST" transaction
+    # We need to perform validation and ensure that the key is a valid PLU and then adjust the total for
+    # The PLU in question
     trim($transactionKey); # Remove leading and trailing spaces
     $transactionKey =~ s/(\w+)/\u\L$1/gx; # Normalise PLU case to "Title Case"
 
-    # Ensure the PLU / key matches one of the expected categories
+    # Ensure the PLU matches one of the valid PLU names
     if (exists($PLUList{$transactionKey}))
     {
-        # Add to the appropriate column in the data
+        # Add the transaction value to the hourly total for this PLU
         $hourlyTransactionData{"PLU"}{$transactionKey} += $transactionValue; 
         $currentPLU = $transactionKey;
     }
@@ -763,7 +752,7 @@ sub parseRefund
 # This function parses diagnostic information (e.g. settings), this is currently ignored but logged
 sub parseDiagnostic
 {
-    unless ($currentEvent == $PARSER_EVENTS{OTHER})
+    unless ($currentEvent == $PARSER_EVENTS{OTHER}) # Only need to call this once before we set the parser to ignore
     {
         # Ignore settings and diagnostic information
         logMsg("Ignoring diagnostic output: $_[0]");
@@ -773,7 +762,7 @@ sub parseDiagnostic
 }
 
 # This function is responsible for parsing a line of serial data and storing various information which is later converted to CSV
-# A dispatch table is used in preference to a long if-elsif-else chain as it is more efficient and better structured 
+# A dispatch table is used in preference to a long if-elsif-else chain as it is more efficient and easier to maintain
 sub parseLine
 {
     # The line of data passed in as a parameter will be accessible as $dataLine
@@ -811,7 +800,7 @@ sub saveState
     %hourlyTransactionDataCopy = %{ clone(\%hourlyTransactionData) };
 
     # Serialise the data structure so we can resume from here in case of a short-term power failure, etc.
-    if ($currentEventHour ne "0")
+    unless ($currentEventHour eq "0") # Do not attempt to store data on startup when nothing has been read
     {
         store(\%hourlyTransactionDataCopy, "hourlyData_$currentEventHour.dat");
     }
@@ -819,18 +808,18 @@ sub saveState
     return;
 }
 
-# This function loads a previously saved state, this function is used for
-# returning to the state after the previous transaction after a refund or
-# cancellation has been detected 
+# This function loads a previously saved state and is used for returning to
+# a "known-good" state after the previous transaction was declared as invalid
+# due to being a reprint, cancellation or other voided transaction
 sub loadState
 {
     # Reset the state of the hourly transaction data to how it was before the current transaction
-    $invalidEvent = TRUE;
+    $previousEventInvalid = TRUE;
     %hourlyTransactionData = %hourlyTransactionDataCopy;
     $transactionCount--;
     $hourlyTransactionData{"Customer Count"} = $transactionCount;
 
-    unless ($currentEvent == $PARSER_EVENTS{FOOTER})
+    unless ($currentEvent == $PARSER_EVENTS{FOOTER}) # XXX: This may not be required, deprecate in future versions
     {
         $currentEvent = $PARSER_EVENTS{OTHER};
     }
@@ -857,8 +846,8 @@ sub storeLine
         }
 
         logMsg("Opened serial data log at $serialLogFilePath");
-        $dataOpen = TRUE;
         $serialLog->autoflush(1); # Disable output buffering
+        $dataOpen = TRUE;
     }
 
     print $serialLog $dataLine;
@@ -889,7 +878,7 @@ sub clearData
         }
     }
 
-    # Reset customer count
+    # Reset the hourly transaction count
     $transactionCount = 0;
 
     # Remove serialised data for the previous hour
@@ -898,7 +887,7 @@ sub clearData
     return;
 }
 
-# This function writes the stored data to CSV format for later upload to the frontend server via rsync or SFTP
+# This function converts the collected hourly data to CSV format for later upload to the front-end server via rsync or SFTP
 sub generateCSV
 {
     # Create an appropriately named CSV file and open it in append mode if it does not already exist
@@ -907,7 +896,7 @@ sub generateCSV
         initialiseOutputFile();
     }
 
-    # Sanity check, do not generate a row of CSV if there were no transactions
+    # Sanity check, do not generate a row of CSV if there were no transactions in the previous hour
     if ($hourlyTransactionData{"Total Takings"} eq "0")
     {
         logMsg("No transactions read for " . $hourlyTransactionData{"Hours"} . ", discarding CSV"); 
@@ -972,6 +961,7 @@ sub normaliseData
 {
     my ($dataLine) = @_;
 
+    # Remove hex characters, question marks, etc.
     $dataLine =~ s/\x{00}//gx;
     $dataLine =~ s/\x{c2}//gx;
     $dataLine =~ s/\x{9c}/$CURRENCY_SYMBOL/gx;
@@ -981,8 +971,8 @@ sub normaliseData
 }
 
 # This function reads in the "shops.csv" file in the config subdirectory and assigns an ID based on
-# The closest match between the current hostname and a shop name in the file, this is used to correctly
-# name CSV output files without this being hardcoded in the source
+# The closest match between the current hostname and a shop name in the file. This is used to correctly
+# name CSV output files without IDs being listed here in the source
 sub getOutputFileName
 {
     # Get the hostname and the filepath of the shops file
@@ -1009,7 +999,7 @@ sub getOutputFileName
     # Iterate through
     while (my $row = <$shopIDFile>)
     {
-        chomp($row);
+        chomp($row); # Remove blank lines
 
         (my $shopID, my $shopName) = split(',', $row, 2);
 
@@ -1035,24 +1025,24 @@ sub getOutputFileName
     }
 
     # Otherwise, check if this is a store with multiple ECR units and append to the filename to avoid conflicts if so
-    elsif ($currentHostname =~ /([0-9])/x)
+    if ($matchedID ne "UNKNOWN" && $currentHostname =~ /([0-9])/x)
     {
-        # This relies on the hostname having a number appended to it and no one-till stores having numbers in their hostname
+        # This relies on the hostname having a number appended to it and no single-till stores having numbers in their hostname
         $matchedID .= "_$1";
     }
 
-    # Set the filename in the format "yyyymmdd_matchedID.csv"
+    # Set the filename in the format "yyyymmdd_$matchedID.csv"
     my $outputFileName = dirname($CURRENT_VERSION_PATH) . $DIRECTORY_SEPARATOR . "ecr_data" . $DIRECTORY_SEPARATOR .
-        $currentDate[0] . $currentDate[1] . $currentDate[2] . "_$matchedID.csv";
+       $currentDate[0] . $currentDate[1] . $currentDate[2] . "_$matchedID.csv";
 
     return $outputFileName;
 }
 
 # This function creates a CSV file in the local ecr_data directory with a list of predefined headings
-# and named with the date of creation and hostname of the machine SAMPi is running on
+# These files are named with the date the data was gathered and shop ID of where it was gathered
 sub initialiseOutputFile
 {
-    my @csvHeadings; # Store CSV headings
+    my @csvHeadings; # Array of CSV headings
     my $outputFilePath = getOutputFileName(); 
     my $pluFile; # PLU filehandle
 
@@ -1073,7 +1063,7 @@ sub initialiseOutputFile
         # Define the headings for the output file, these match the keys defined in the hourlyTransactionData hash
         foreach my $key (keys %hourlyTransactionData)
         {
-            # PLU column names are listed in the PLUList structure
+            # PLU heading names are listed in the nested $PLUList hash
             if ($key eq "PLU")
             {
                 foreach my $PLU (keys %PLUList)
@@ -1083,24 +1073,20 @@ sub initialiseOutputFile
                 }
             }
 
+            # Other headings are not nested
             else
             {
                 push(@csvHeadings, $key); 
             }
         }
 
-        # Write the headings to the file
-        for my $i (0..$#csvHeadings) 
+        # Write the headings to the CSV output file
+        for my $currentHeading (0..$#csvHeadings) 
         {
-            if ($i == $#csvHeadings)
-            {
-                print $csvFile "$csvHeadings[$i]\n"; # No comma
-            }
+            # Last header will end with a newline, others with a comma
+            my $endChar = ($currentHeading == $#csvHeadings) ? "\n" : ",";
 
-            else
-            {
-                print $csvFile "$csvHeadings[$i],";
-            }
+            print $csvFile $csvHeadings[$currentHeading] . $endChar;
         }
     }
 
@@ -1108,6 +1094,7 @@ sub initialiseOutputFile
     else
     {
         logMsg("Opening existing CSV file $outputFilePath");
+
         ## no critic qw(RequireBriefOpen)
         unless (open ($csvFile, '>>', $outputFilePath))
         {
@@ -1133,27 +1120,26 @@ sub processData
         croak("Serial port has not been configured, call initialiseSerialPort() before this function\n");
     }
 
+    my $pluFile; # File handle for the file containing valid PLU names
+
     # Read the plu.txt file in the config subdirectory to retrieve a list of acceptable PLU values
-    unless (open (my $pluFile, '<', "config/plu.txt"))
+    unless (open ($pluFile, '<', "config/plu.txt"))
     {
         logMsg("Error reading PLU file, \"plu.txt\" should be in the config directory");
         die "Error reading PLU file\n";
     }
 
-    else
+    # Populate the PLUList structure with the acceptable PLU values
+    while (my $pluLine = <$pluFile>)
     {
-        # Populate the PLUList structure with the acceptable PLU values
-        while (my $pluLine = <$pluFile>)
-        {
-            chomp $pluLine;
-            next if ($pluLine =~ /^\s+$/x); # Ignore blank lines
-            $PLUList{$pluLine} = "0";
-        }
-
-        close ($pluFile);
+        chomp $pluLine;
+        next if ($pluLine =~ /^\s+$/x); # Ignore blank lines
+        $PLUList{$pluLine} = "0"; # Initialise the nested hash
     }
 
-    # Check to see if SAMPi is running during business hours which will determine active / idle mode 
+    close ($pluFile);
+
+    # Check to see if SAMPi is running during business hours which will determine if we are in active or idle mode 
     my $storeIsOpen = isBusinessHours();
 
     # Main loop
@@ -1223,14 +1209,14 @@ sub processData
                 parseLine($serialDataLine);
             }
             
-            $storeIsOpen = isBusinessHours();
+            $storeIsOpen = isBusinessHours(); # Test if we are still running during opening hours 
 
             # 200ms delay to save CPU cycles
             sleep(0.2);
         }
     
-        # If we are out of business hours, stop reading serial data and wait until the store reopens, 
-        # checking periodically for an updated version of this software
+        # If we are out of business hours then stop reading serial data, prepare variables for a new day 
+        # and wait until the store reopens, whilst periodically checking for an updated version of SAMPi
         while (!$storeIsOpen)
         {
             my $sleepTime = 0;
@@ -1249,17 +1235,12 @@ sub processData
             else
             {
                 logMsg("No update found, will try again later");
-                while ($sleepTime < $UPDATE_CHECK_DELAY_MINUTES * 60)
+
+                # Sleep for the whole update delay but check once a minute if we have entered business hours
+                while ($sleepTime < $UPDATE_CHECK_DELAY_MINUTES * 60) 
                 {
-                    $storeIsOpen = isBusinessHours();
-
-                    if ($storeIsOpen)
-                    {
-                        last;
-                    }
-
-                    sleep(1);
-                    $sleepTime++;
+                    sleep(60);
+                    $sleepTime += 60;
                 }
             }
 
