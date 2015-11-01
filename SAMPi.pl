@@ -1220,7 +1220,6 @@ sub processData
         while (!$storeIsOpen)
         {
             my $sleepTime = 0;
-            logMsg("Checking for updates every $UPDATE_CHECK_DELAY_MINUTES minutes");
 
             # Check if the current script and latest script on the server differ
             $updateAvailable = isUpdateAvailable();
@@ -1234,7 +1233,7 @@ sub processData
 
             else
             {
-                logMsg("No update found, will try again later");
+                logMsg("No update found, will try again in $UPDATE_CHECK_DELAY_MINUTES minutes");
 
                 # Sleep for the whole update delay but check once a minute if we have entered business hours
                 while ($sleepTime < $UPDATE_CHECK_DELAY_MINUTES * 60) 
