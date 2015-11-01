@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 #
-# SAMPi - SAM4S ECR data reader, parser and logger (Last Modified 31/10/2015)
+# SAMPi - SAM4S ECR data reader, parser and logger (Last Modified 01/11/2015)
 #
 # This software runs in the background on a suitably configured Raspberry Pi,
 # reads from a connected SAM4S ECR via serial connection, extracts various data,
@@ -897,7 +897,7 @@ sub generateCSV
     }
 
     # Sanity check, do not generate a row of CSV if there were no transactions in the previous hour
-    if ($hourlyTransactionData{"Total Takings"} eq "0")
+    if ($hourlyTransactionData{"Total Takings"} eq "0" || $hourlyTransactionData{"Customer Count"} <= 0)
     {
         logMsg("No transactions read for " . $hourlyTransactionData{"Hours"} . ", discarding CSV"); 
         return;
