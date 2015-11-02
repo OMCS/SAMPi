@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 #
-# SAMPi - SAM4S ECR data reader, parser and logger (Last Modified 01/11/2015)
+# SAMPi - SAM4S ECR data reader, parser and logger (Last Modified 02/11/2015)
 #
 # This software runs in the background on a suitably configured Raspberry Pi,
 # reads from a connected SAM4S ECR via serial connection, extracts various data,
@@ -166,7 +166,6 @@ my $currentEvent = $PARSER_EVENTS{OTHER}; # Tracks the current type of data bein
 my $currentEventTime = "0"; # Store the time of the current event (in a string)
 my $currentEventHour = "0"; # Just the hour portion of the current event time
 my $lastSavedHour = "0"; # Store the hour we last saved when reading time from the system clock
-my $transactionCount = 0; # Counter for number of transactions per hour / day
 my $firstRun = TRUE; # Flag which determines if this is the first time we are gong through the main loop
 my $currentPLU; # Store the current PLU, used when applying discounts 
 my $previousEventInvalid = FALSE; # Flag which prevents reprints and cancellations from being counted as the first / last event
@@ -335,7 +334,6 @@ sub isBusinessHours
 
             logMsg("Entering Idle Mode");
             clearData(); # Clear the stored data
-            $transactionCount = 0; # Reset the daily transaction count
             unlink <hourlyData*>;  # Remove any stray hourly data 
             $idleMode = TRUE;
         }
@@ -609,7 +607,7 @@ sub adjustTotal
     if (not defined $totalFor)
     {
         # Increment the transaction count, can decrement later if we read a cancel or a reprint
-        $transactionCount++; 
+        $hourlyTransactionData{"Customer Count"}++; 
 
         # Overall total will be adjusted
         $totalFor = "Total Takings"; 
@@ -708,7 +706,7 @@ sub parseTransaction
 
     if ($VERBOSE_PARSER_ENABLED)
     {
-        print "\tITEM FOR TRANSACTION $transactionCount\n";
+        print "\tITEM FOR TRANSACTION $hourlyTransactionData{Customer Count}\n";
     }
 
     return;
@@ -816,8 +814,6 @@ sub loadState
     # Reset the state of the hourly transaction data to how it was before the current transaction
     $previousEventInvalid = TRUE;
     %hourlyTransactionData = %hourlyTransactionDataCopy;
-    $transactionCount--;
-    $hourlyTransactionData{"Customer Count"} = $transactionCount;
 
     unless ($currentEvent == $PARSER_EVENTS{FOOTER}) # XXX: This may not be required, deprecate in future versions
     {
@@ -878,9 +874,6 @@ sub clearData
         }
     }
 
-    # Reset the hourly transaction count
-    $transactionCount = 0;
-
     # Remove serialised data for the previous hour
     unlink <hourlyData*>; 
 
@@ -902,8 +895,6 @@ sub generateCSV
         logMsg("No transactions read for " . $hourlyTransactionData{"Hours"} . ", discarding CSV"); 
         return;
     }
-
-    $hourlyTransactionData{"Customer Count"} = $transactionCount;
 
     # Iterate through the hourly transaction data
     while (my ($transactionDataKey, $transactionData) = each %hourlyTransactionData)
