@@ -1,10 +1,10 @@
 #!/usr/bin/env perl
 #
-# SAMPi - SAM4S ECR data reader, parser and logger (Last Modified 02/11/2015)
+# SAMPi - SAM4S ECR data reader, parser and logger (Last Modified 06/11/2015)
 #
 # This software runs in the background on a suitably configured Raspberry Pi,
 # reads from a connected SAM4S ECR via serial connection, extracts various data,
-# puts it into CSV format and stores it in preparation for upload via (s)rysnc
+# puts it into CSV format and stores it in preparation for upload via rsync or SFTP
 #
 # This software works in conjunction with the SAMPiD daemon to
 # handle uploading CSV data files, removal of data older than 
@@ -49,7 +49,7 @@ use File::Touch; # Perl implementation of the UNIX 'touch' command
 
 # Globally accessible constants and variables #
 
-Readonly our $VERSION => 1.3;
+Readonly our $VERSION => '1.0.1';
 
 Readonly my $MONITOR_MODE_ENABLED   => FALSE; # If enabled, SAMPi will not parse serial data and will simply store it
 Readonly my $STORE_DATA_ENABLED     => TRUE;  # If enabled, SAMPi will store data for analysis, in addition to parsing it 
@@ -63,6 +63,7 @@ Readonly my $CURRENT_VERSION_PATH       => abs_path($0);
 Readonly my $LATEST_VERSION_PATH        => File::Spec->tmpdir() . $DIRECTORY_SEPARATOR . "SAMPi.pl";
 Readonly my $UPDATE_CHECK_DELAY_MINUTES => 120; # Check for updates every two hours in idle mode
 Readonly my $TRANSACTION_DELAY_SECONDS  => 600; # Seconds to wait for a header in a new hour before saving previous hour (used to detect last hour of data)
+Readonly my $SINGLE_ITEM_LIMIT          => 200; # Maximum acceptable price for one item in a transaction, if a value above this is read it will be ignored
 
 # Define opening and closing hours
 Readonly my $STORE_OPENING_HOUR_24 => 6;
@@ -694,9 +695,19 @@ sub parseTransaction
     # Ensure the PLU matches one of the valid PLU names
     if (exists($PLUList{$transactionKey}))
     {
-        # Add the transaction value to the hourly total for this PLU
-        $hourlyTransactionData{"PLU"}{$transactionKey} += $transactionValue; 
-        $currentPLU = $transactionKey;
+        if ($transactionValue < $SINGLE_ITEM_LIMIT)
+        {
+            # Add the transaction value to the hourly total for this PLU
+            $hourlyTransactionData{"PLU"}{$transactionKey} += $transactionValue; 
+            $currentPLU = $transactionKey;
+        }
+
+        else
+        {
+            adjustTotal(-$transactionValue); # Ignore this item in the total for this transaction
+            adjustCashTotal(-$transactionValue); # As well as the cash total
+            logMsg("$transactionKey at $CURRENCY_SYMBOL$transactionValue appears to be erroneous, if this is a genuine transaction increase \$SINGLE_ITEM_LIMIT");
+        }
     }
 
     else
