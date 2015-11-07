@@ -21,14 +21,14 @@ while (my $line = <$csvFile>)
 
 close $csvFile;
 
-my %systems = map {reverse split /,/x} @lines;
+my %SAMPiNodes = map {reverse split /,/x} @lines;
 
-foreach my $system (sort {$a <=> $b} keys %systems)
+foreach my $node (sort {$a <=> $b} keys %SAMPiNodes)
 {
     print color("reset");
-    # print "$systems{$system}: $system\n"; 
-    print("Connecting to $systems{$system} ($system)...");
-    my $status = system("netcat -z -w2 sampi$system.ddns.net 22 > /dev/null 2>&1");
+    # print "$SAMPiNodes{$node}: $node\n"; 
+    print("Connecting to $SAMPiNodes{$node} ($node)...");
+    my $status = system("netcat -z -w2 sampi$node.ddns.net 22 > /dev/null 2>&1");
     
     if ($status == 0)
     {
