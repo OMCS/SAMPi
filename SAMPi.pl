@@ -156,8 +156,7 @@ my $serialLogFilePath; # File path for logged serial data, cleared daily when SA
 my $serialPort; # Serial port file descriptor, used for input
 
 # Updates and Idle Mode
-my $postUpdateExecuted; # Semaphore filename referred to in postUpdate()
-my $updateAvailable = FALSE; # Update flag
+my $postUpdateExecuted; # Filename of semaphore referred to in postUpdate()
 my $idleMode = FALSE; # Flag which tests if we have entered idle mode
 
 # Parser State Variables
@@ -346,6 +345,23 @@ sub isBusinessHours
     }
 }
 
+# This function calls the isUpdateAvailable() function and returns the value to the caller
+# Updates will be checked for at startup and during idle mode
+sub checkForUpdate
+{
+   # Check if the current script and latest script on the server differ
+    my $updateAvailable = isUpdateAvailable();
+
+    if ($updateAvailable)
+    {
+        # Install the newer version of the script and run it
+        logMsg("Newer version is available, updating and restarting");
+        updateAndReload($updateAvailable);
+    }
+
+    return $updateAvailable;
+}
+
 # This function checks to see if a new version is available and returns true if this is the case
 sub isUpdateAvailable
 {   
@@ -384,6 +400,8 @@ sub isUpdateAvailable
 # in the isUpdateAvailable() function
 sub updateAndReload
 {
+    my ($updateAvailable) = @_;
+
     if ($updateAvailable)
     {
         logMsg("Update found, overwriting $CURRENT_VERSION_PATH with $LATEST_VERSION_PATH");
@@ -1224,18 +1242,10 @@ sub processData
         while (!$storeIsOpen)
         {
             my $sleepTime = 0;
-
-            # Check if the current script and latest script on the server differ
-            $updateAvailable = isUpdateAvailable();
-
-            if ($updateAvailable)
-            {
-                # Install the newer version of the script and run it
-                logMsg("New version is available, updating and restarting");
-                updateAndReload();
-            }
-
-            else
+            
+            my $updateAvailable = checkForUpdate();
+            
+            if (!$updateAvailable)
             {
                 logMsg("No update found, will try again in $UPDATE_CHECK_DELAY_MINUTES minutes");
 
@@ -1258,20 +1268,24 @@ sub main
 {
     logMsg("SAMPi v$VERSION Initialising...");
 
+    # Check for updates on startup
+    checkForUpdate();
+
+    # Run the update hook function if one is specified 
     if ($UPDATE_HOOK_ENABLED)
     {
         postUpdate();
     }
 
+    # Print warning if monitor mode is enabled
     if ($MONITOR_MODE_ENABLED)
     {
         logMsg("MONITOR MODE ENABLED, STORING DATA");
     }
 
+    # Initialise port and start processing data
     initialiseSerialPort();
     processData();
-
-    exit;
 }
 
 main();
