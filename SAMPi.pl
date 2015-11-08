@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 #
-# SAMPi - SAM4S ECR data reader, parser and logger (Last Modified 06/11/2015)
+# SAMPi - SAM4S ECR data reader, parser and logger (Last Modified 08/11/2015)
 #
 # This software runs in the background on a suitably configured Raspberry Pi,
 # reads from a connected SAM4S ECR via serial connection, extracts various data,
@@ -49,7 +49,7 @@ use File::Touch; # Perl implementation of the UNIX 'touch' command
 
 # Globally accessible constants and variables #
 
-Readonly our $VERSION => '1.0.1';
+Readonly our $VERSION => '1.0.2';
 
 Readonly my $MONITOR_MODE_ENABLED   => FALSE; # If enabled, SAMPi will not parse serial data and will simply store it
 Readonly my $STORE_DATA_ENABLED     => TRUE;  # If enabled, SAMPi will store data for analysis, in addition to parsing it 
@@ -62,7 +62,7 @@ Readonly my $DIRECTORY_SEPARATOR        => ($^O =~ /^Win/ix) ? "\\" : "/"; # Ter
 Readonly my $CURRENT_VERSION_PATH       => abs_path($0);
 Readonly my $LATEST_VERSION_PATH        => File::Spec->tmpdir() . $DIRECTORY_SEPARATOR . "SAMPi.pl";
 Readonly my $UPDATE_CHECK_DELAY_MINUTES => 120; # Check for updates every two hours in idle mode
-Readonly my $TRANSACTION_DELAY_SECONDS  => 600; # Seconds to wait for a header in a new hour before saving previous hour (used to detect last hour of data)
+Readonly my $TRANSACTION_DELAY_SECONDS  => 1200; # Seconds to wait for a header in a new hour before saving previous hour (used to detect last hour of data)
 Readonly my $SINGLE_ITEM_LIMIT          => 200; # Maximum acceptable price for one item in a transaction, if a value above this is read it will be ignored
 
 # Define opening and closing hours
@@ -908,8 +908,10 @@ sub generateCSV
     }
 
     # Iterate through the hourly transaction data
-    while (my ($transactionDataKey, $transactionData) = each %hourlyTransactionData)
+    foreach my $transactionDataKey (keys %hourlyTransactionData)
     {
+        my $transactionData = $hourlyTransactionData{$transactionDataKey};
+
         # Process PLU totals
         if ($transactionDataKey eq "PLU")
         {

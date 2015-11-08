@@ -27,3 +27,4 @@ misc/
 config/
 doc/*Proposal*
 hourlyData*
+.perlcriticrc
