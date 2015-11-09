@@ -60,7 +60,7 @@ Readonly my $LOGGING_ENABLED        => TRUE;  # Enable or disable logging info /
 Readonly my $VERBOSE_PARSER_ENABLED => FALSE; # If enabled, the parser will print information to STDOUT as it runs
 Readonly my $DEBUG_ENABLED          => (@ARGV > 0) ? TRUE : FALSE; # If enabled, will read time from serial data
 
-Readonly my $DIRECTORY_SEPARATOR        => ($^O =~ /^Win/ix) ? "\\" : "/"; # Ternary operator used for brevity
+Readonly my $DIRECTORY_SEPARATOR        => ($^O =~ /^Win/ix) ? "\\" : "/"; # Ternary operator used for brevity, included for future W32 compatability
 Readonly my $CURRENT_VERSION_PATH       => abs_path($0);
 Readonly my $LATEST_VERSION_PATH        => File::Spec->tmpdir() . $DIRECTORY_SEPARATOR . "SAMPi.pl";
 Readonly my $UPDATE_CHECK_DELAY_MINUTES => 120; # Check for updates every two hours in idle mode
@@ -157,7 +157,6 @@ my $csvOpen = FALSE; # Flag which determines whether a csv output file is curren
 my $serialLog; # Serial log descriptor (monitor mode only)
 my $dataOpen = FALSE; # Determines if serial log file has been opened (monitor mode only)
 my $dataLogFilePath; # File path for logged serial data, cleared daily when SAMPi goes into idle mode
-my $serialPort; # Serial port file descriptor, used for input
 
 # Parser State Variables
 my $previousEvent = $PARSER_EVENTS{OTHER}; # Track the previous event, used for counting transactions
@@ -272,7 +271,7 @@ sub initialiseSerialPort
     Readonly my $HANDSHAKE => "none";
 
     logMsg("Initialising Serial Port...");
-    $serialPort = Device::SerialPort->new($SERIAL_PORT);
+    my $serialPort = Device::SerialPort->new($SERIAL_PORT);
 
     # If there is an error initialising the serial port, print a warning and terminate
     unless (defined $serialPort)
@@ -293,7 +292,7 @@ sub initialiseSerialPort
 
     logMsg("Opened serial port $SERIAL_PORT at $BPS" . "BPS");
 
-    return;
+    return $serialPort; # Return valid Device::SerialPort object to the caller for use
 }
 
 # This utility function returns TRUE (provided by constant::boolean) if the current time is during business hours
@@ -1137,12 +1136,15 @@ sub initialiseOutputFile
 
 # This function reads serial data from the ECR using the connection established by initialiseSerialPort()
 # when running during business hours. It uses the parsedLineToCSV() function to collect sets of data and store it
-# in CSV format for upload. If called outside of business hours it will periodically check for updates
+# in CSV format for upload. If called outside of business hours it will periodically check for a new version of SAMPi.pl
 sub processData
 {
-    unless ($serialPort)
+    my ($serialPort) = @_; # Get serial port file descriptor passed in
+
+    # Ensure serial port object is available and valid
+    unless ($serialPort && $serialPort->isa("Device::SerialPort"))
     {
-        croak("Serial port has not been configured, call initialiseSerialPort() before this function\n");
+        croak("Serial port has not been configured or is not open, call initialiseSerialPort() before this function\n");
     }
 
     my $firstRun = TRUE; # Flag which determines if this is the first time we are gong through the main loop
@@ -1292,8 +1294,8 @@ sub main
     }
 
     # Initialise port and start processing data
-    initialiseSerialPort();
-    processData();
+    my $serialPort = initialiseSerialPort();
+    processData($serialPort);
 }
 
 main();
