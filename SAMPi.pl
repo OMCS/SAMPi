@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 #
-# SAMPi - SAM4S ECR data reader, parser and logger (Last Modified 08/11/2015)
+# SAMPi - SAM4S ECR data reader, parser and logger (Last Modified 09/11/2015)
 #
 # This software runs in the background on a suitably configured Raspberry Pi,
 # reads from a connected SAM4S ECR via serial connection, extracts various data,
@@ -14,6 +14,8 @@
 # to a configurable update URL
 
 # Modern Perl #
+
+use 5.010;
 
 use strict; 
 use warnings;
@@ -47,9 +49,9 @@ use File::Copy; # Provides the copy function
 use File::Spec qw(tmpdir); # Used to get portable directory paths
 use File::Touch; # Perl implementation of the UNIX 'touch' command
 
-# Globally accessible constants and variables #
+# Globally accessible constants #
 
-Readonly our $VERSION => '1.0.2';
+Readonly our $VERSION => '1.0.3';
 
 Readonly my $MONITOR_MODE_ENABLED   => FALSE; # If enabled, SAMPi will not parse serial data and will simply store it
 Readonly my $STORE_DATA_ENABLED     => TRUE;  # If enabled, SAMPi will store data for analysis, in addition to parsing it 
@@ -64,12 +66,13 @@ Readonly my $LATEST_VERSION_PATH        => File::Spec->tmpdir() . $DIRECTORY_SEP
 Readonly my $UPDATE_CHECK_DELAY_MINUTES => 120; # Check for updates every two hours in idle mode
 Readonly my $TRANSACTION_DELAY_SECONDS  => 1200; # Seconds to wait for a header in a new hour before saving previous hour (used to detect last hour of data)
 Readonly my $SINGLE_ITEM_LIMIT          => 200; # Maximum acceptable price for one item in a transaction, if a value above this is read it will be ignored
+Readonly my $LOG_FILENAME               => "sampi.log"; # Filename to use for the log created by SAMPi when logging is enabled
 
 # Define opening and closing hours
 Readonly my $STORE_OPENING_HOUR_24 => 6;
 Readonly my $STORE_CLOSING_HOUR_24 => 23;
 
-# Internationalisation
+# Localisation
 Readonly my $CURRENCY_SYMBOL => '£';
 
 # Constants used to identify which part of the data we are currently parsing
@@ -145,19 +148,16 @@ Readonly my @TRANSACTION_DISPATCH_TABLE =>
     }
 );
 
+# Globally accessible variables, these variables are used by multiple functions 
+# and will be refactored in future versions to follow best practices 
+
 # File I/O & Flags
-my $logOpen = FALSE; # Flag to determine if a log file has been opened
-my $logFile; # Log file descriptor, used in multiple functions
-my $csvOpen = FALSE; # Flag as above
-my $csvFile; # CSV file descriptor, used for output
+my $csvFile; # CSV file descriptor, used for output from SAMPi
+my $csvOpen = FALSE; # Flag which determines whether a csv output file is currently open
 my $serialLog; # Serial log descriptor (monitor mode only)
 my $dataOpen = FALSE; # Determines if serial log file has been opened (monitor mode only)
-my $serialLogFilePath; # File path for logged serial data, cleared daily when SAMPi goes into idle mode
+my $dataLogFilePath; # File path for logged serial data, cleared daily when SAMPi goes into idle mode
 my $serialPort; # Serial port file descriptor, used for input
-
-# Updates and Idle Mode
-my $postUpdateExecuted; # Filename of semaphore referred to in postUpdate()
-my $idleMode = FALSE; # Flag which tests if we have entered idle mode
 
 # Parser State Variables
 my $previousEvent = $PARSER_EVENTS{OTHER}; # Track the previous event, used for counting transactions
@@ -166,7 +166,6 @@ my $currentEvent = $PARSER_EVENTS{OTHER}; # Tracks the current type of data bein
 my $currentEventTime = "0"; # Store the time of the current event (in a string)
 my $currentEventHour = "0"; # Just the hour portion of the current event time
 my $lastSavedHour = "0"; # Store the hour we last saved when reading time from the system clock
-my $firstRun = TRUE; # Flag which determines if this is the first time we are gong through the main loop
 my $currentPLU; # Store the current PLU, used when applying discounts 
 my $previousEventInvalid = FALSE; # Flag which prevents reprints and cancellations from being counted as the first / last event
 my $prevTransactionTime = 0; # Stores time of most recently read transaction, checked in order to save at the end of the day
@@ -179,7 +178,7 @@ tie %PLUList, "Tie::IxHash";
 # The following data structure holds data for each of the columns that will eventually comprise the CSV file
 # We store transactions as we read them, make calculations from this data and convert it to CSV once hourly
 # This hash is tied for the same reason as the PLU list.
-my %hourlyTransactionData;
+my  %hourlyTransactionData;
 tie %hourlyTransactionData, "Tie::IxHash";
 
 # Initial values are set to zero
@@ -202,7 +201,7 @@ tie %hourlyTransactionDataCopy, "Tie::IxHash";
 
 # Functions #
 
-# Utility function which returns the current date in [yyyy][mm][dd] as an array
+# Utility function which returns the current date as an array in [yyyy][mm][dd] format
 sub getCurrentDate
 {
     my @timestamp = localtime();
@@ -234,15 +233,16 @@ sub logMsg
     # Write message to file if logging is enabled
     if ($LOGGING_ENABLED)
     {
+        state $logFile; # File descriptor for the log file we have created or are about to create
+        state $logOpen = FALSE; # Static flag to determine if the log file has been opened during the current execution
+
         unless ($logOpen)
         {
-            my $logFileName = "sampi.log";
-
             # Attempt to open the log file (located in the 'log' subdir of the current directory) in append mode
             ## no critic qw(RequireBriefOpen)
-            unless (open ($logFile, '>>', "log" . $DIRECTORY_SEPARATOR . $logFileName))
+            unless (open ($logFile, '>>', "log" . $DIRECTORY_SEPARATOR . $LOG_FILENAME))
             {
-                die("Error opening log file at ." . $DIRECTORY_SEPARATOR . "log" . $DIRECTORY_SEPARATOR . "$logFileName\n");
+                die("Error opening log file at ." . $DIRECTORY_SEPARATOR . "log" . $DIRECTORY_SEPARATOR . "$LOG_FILENAME\n");
             }
 
             $logFile->autoflush(1); # Disable buffering
@@ -302,6 +302,8 @@ sub isBusinessHours
 {
     my $currentHour = getCurrentHour();
 
+    state $idleMode = FALSE; # Keep track of whether we are in idle mode or not
+
     # Return true if we are within business hours
     if ($currentHour >= $STORE_OPENING_HOUR_24 && $currentHour <= $STORE_CLOSING_HOUR_24)
     {
@@ -328,7 +330,7 @@ sub isBusinessHours
             if (defined $serialLog)
             {
                 close $serialLog;
-                unlink $serialLogFilePath;
+                unlink $dataLogFilePath;
                 $dataOpen = FALSE;
             }
 
@@ -409,9 +411,9 @@ sub updateAndReload
         logMsg("Restarting...");
 
         # Remove file which signifies we have run postUpdate() before if it exists
-        if (-e $postUpdateExecuted)
+        if (glob("*.run"))
         {
-            unlink $postUpdateExecuted; 
+            unlink <*.run>; 
         }
 
         exec $0; # Exec call replaces the currently running process with the new version
@@ -441,9 +443,10 @@ sub postUpdate
     # Generate checksum for requested post-update code, this prevents it running more than once per version
     my $checksum = sha1_base64($postUpdateCode);
     $checksum =~ s/$DIRECTORY_SEPARATOR/-/xg; # Replace anything matching the directory separator
-    $postUpdateExecuted = dirname($CURRENT_VERSION_PATH) . $DIRECTORY_SEPARATOR . $checksum . ".run";
 
-    unless (-f $postUpdateExecuted) # Unless postUpdate() has been called before (semaphore exists)
+    my $postUpdateExecuted = dirname($CURRENT_VERSION_PATH) . $DIRECTORY_SEPARATOR . $checksum . ".run";
+
+    if (! -f $postUpdateExecuted) # If postUpdate() has not been called before (semaphore does not exist)
     {
         logMsg("postUpdate() call requested, executing postUpdateCode");
 
@@ -860,17 +863,17 @@ sub storeLine
     my ($dataLine) = @_;
 
     my @date = getCurrentDate();
-    $serialLogFilePath = $ENV{'HOME'} . $DIRECTORY_SEPARATOR . "serial_log_" . $date[2] . ".dat"; 
+    $dataLogFilePath = $ENV{'HOME'} . $DIRECTORY_SEPARATOR . "serial_log_" . $date[2] . ".dat"; 
 
     unless ($dataOpen)
     {
-        unless (open ($serialLog, '>>', $serialLogFilePath))
+        unless (open ($serialLog, '>>', $dataLogFilePath))
         {
-            logMsg("Error opening serial log file at $serialLogFilePath");
+            logMsg("Error opening serial log file at $dataLogFilePath");
             die;
         }
 
-        logMsg("Opened serial data log at $serialLogFilePath");
+        logMsg("Opened serial data log at $dataLogFilePath");
         $serialLog->autoflush(1); # Disable output buffering
         $dataOpen = TRUE;
     }
@@ -1142,6 +1145,8 @@ sub processData
         croak("Serial port has not been configured, call initialiseSerialPort() before this function\n");
     }
 
+    my $firstRun = TRUE; # Flag which determines if this is the first time we are gong through the main loop
+
     my $pluFile; # File handle for the file containing valid PLU names
 
     # Read the plu.txt file in the config subdirectory to retrieve a list of acceptable PLU values
@@ -1269,7 +1274,10 @@ sub main
     logMsg("SAMPi v$VERSION Initialising...");
 
     # Check for updates on startup
-    checkForUpdate();
+    unless ($DEBUG_ENABLED)
+    {
+        checkForUpdate();
+    }
 
     # Run the update hook function if one is specified 
     if ($UPDATE_HOOK_ENABLED)
