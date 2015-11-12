@@ -18,11 +18,11 @@
 ENABLE_LOGGING=1
 LOCKDIR=/tmp/SAMPiD.lock
 DAYS_TO_KEEP_DATA=90
-SFTP_ENABLED=true
+SFTP_ENABLED=false # Used prior to setting up rsync on the server
 
 cleanup()
 {
-    # Remove the lock directory
+    # Remove the lock directory (directory creation is atomic)
     if rmdir $LOCKDIR; then
         echo "SAMPiD shut down"
     else
