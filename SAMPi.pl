@@ -155,10 +155,10 @@ Readonly my @TRANSACTION_DISPATCH_TABLE =>
 my $csvFile; # CSV file descriptor, used for output from SAMPi
 my $csvOpen = FALSE; # Flag which determines whether a csv output file is currently open
 my $serialLog; # Serial log descriptor (monitor mode only)
-my $dataOpen = FALSE; # Determines if serial log file has been opened (monitor mode only)
+my $dataOpen = FALSE; # Determines if serial log file has been opened (if data logging is enabled)
 my $dataLogFilePath; # File path for logged serial data, cleared daily when SAMPi goes into idle mode
 
-# Parser State Variables
+# Parser State
 my $previousEvent = $PARSER_EVENTS{OTHER}; # Track the previous event, used for counting transactions
 my $previousEventTime = "0"; # Stores the time of the previous event (in  a string)
 my $currentEvent = $PARSER_EVENTS{OTHER}; # Tracks the current type of data being parsed
@@ -492,7 +492,6 @@ sub saveData
         }
 
         # Write the collected data to the CSV file and clear the data structure
-        logMsg("Generating CSV for " . $hourlyTransactionData{"Hours"});
         generateCSV();
         clearData();
     }
@@ -542,7 +541,7 @@ sub parseHeader
         $previousEventTime = $currentEventTime;
     }
 
-    $previousEventInvalid = FALSE; # Clear invalid flag
+    $previousEventInvalid = FALSE; # Clear invalid event flag
 
     # Extract the event time into the $1 reserved variable
     $headerLine =~ /([0-9][0-9]:[0-9][0-9])/x;
@@ -559,7 +558,7 @@ sub parseHeader
         # If we are debugging, we only use the hours in the serial headers to indicate the current hour  so that
         # we don't have to wait until the clock hour changes to generate CSV data, in production we check both times
         # If the current hour is different to the hour of the most recent transaction and this is not the beginning of the day
-        if ($currentEventHour ne substr($hourlyTransactionData{"Hours"}, 0, 2) and $hourlyTransactionData{"Hours"} ne "0")
+        if ($hourlyTransactionData{"Hours"} ne "0" && $currentEventHour > substr($hourlyTransactionData{"Hours"}, 0, 2))
         {
             saveData(); 
         }
@@ -914,6 +913,8 @@ sub clearData
 # This function converts the collected hourly data to CSV format for later upload to the front-end server via rsync or SFTP
 sub generateCSV
 {
+    state $lastCalledHour = 0; # Keep track of when this function was last called to prevent duplicate entries in the file
+
     # Create an appropriately named CSV file and open it in append mode if it does not already exist
     unless ($csvOpen)
     {
@@ -926,6 +927,14 @@ sub generateCSV
         logMsg("No transactions read for " . $hourlyTransactionData{"Hours"} . ", discarding CSV"); 
         return;
     }
+
+    # Similarly, do not print to file if we already have data for the current event hour in the file
+    if ($lastCalledHour == $currentEventHour)
+    {
+        return;
+    }
+    
+    logMsg("Generating CSV for " . $hourlyTransactionData{"Hours"});
 
     # Iterate through the hourly transaction data
     foreach my $transactionDataKey (keys %hourlyTransactionData)
@@ -962,6 +971,8 @@ sub generateCSV
             print $csvFile "$transactionData\n";
         }
     }
+
+    $lastCalledHour = $currentEventHour; # Update last called hour, provides another layer of protection against duplicates
 
     return;
 }
