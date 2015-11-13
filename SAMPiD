@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# SAMPiD - Daemon for the SAMPi ECR tool (Last Modified 24/10/2015)
+# SAMPiD - Daemon for the SAMPi ECR tool (Last Modified 24/11/2015)
 #
 # This software should be set to run on every boot and will ensure that 
 # the main Perl program which reads data via serial, logs it and prepares
@@ -121,7 +121,9 @@ END
         fi
     fi
 
-    rm newFiles
+    if [[ -e newFiles ]]; then
+        rm newFiles
+    fi
 
     # Update the local config directory if required, no fallback required as this isn't crucial
     rsync -autv $USER@$SERVER:/config/* $SAMPI_PATH/config/
