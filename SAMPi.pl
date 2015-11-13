@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 #
-# SAMPi - SAM4S ECR data reader, parser and logger (Last Modified 11/11/2015)
+# SAMPi - SAM4S ECR data reader, parser and logger (Last Modified 12/11/2015)
 #
 # This software runs in the background on a suitably configured Raspberry Pi,
 # reads from a connected SAM4S ECR via serial connection, extracts various data,
@@ -58,7 +58,7 @@ Readonly my $STORE_DATA_ENABLED     => TRUE;  # If enabled, SAMPi will store dat
 Readonly my $UPDATE_HOOK_ENABLED    => FALSE; # Attempt to call the postUpdate() function once on start if TRUE
 Readonly my $LOGGING_ENABLED        => TRUE;  # Enable or disable logging info / warnings / errors to file
 Readonly my $VERBOSE_PARSER_ENABLED => FALSE; # If enabled, the parser will print information to STDOUT as it runs
-Readonly my $DEBUG_ENABLED          => (@ARGV > 0) ? TRUE : FALSE; # If enabled, will read time from serial data
+Readonly my $DEBUG_ENABLED          => (@ARGV > 0) ? TRUE : FALSE; # If enabled, will read time solely from serial data
 
 Readonly my $DIRECTORY_SEPARATOR        => ($^O =~ /^Win/ix) ? "\\" : "/"; # Ternary operator used for brevity, included for future W32 compatability
 Readonly my $CURRENT_VERSION_PATH       => abs_path($0);
@@ -119,7 +119,7 @@ Readonly my @EVENT_DISPATCH_TABLE =>
     {
         parser => \&parseDiagnostic,
         regexp => qr/=/x, # Contains '=', used to delimit blocks of diagnostics
-    },
+    }
 );
 
 # Similar dispatch table for processing various transaction data
@@ -226,7 +226,7 @@ sub getCurrentHour
 sub logMsg
 {
     # Take the message passed in as the first parameter and get the current time and date
-    my $logMessage = shift;
+    my ($logMessage) = @_;
     my $timestampStr = localtime();
 
     # Write message to file if logging is enabled
@@ -708,7 +708,7 @@ sub parseTransaction
 
     # If no key-specific parsing function was found, we are processing a simple "PLU => COST" transaction
     # We need to perform validation and ensure that the key is a valid PLU and then adjust the total for
-    # The PLU in question
+    # the PLU in question
     trim($transactionKey); # Remove leading and trailing spaces
     $transactionKey =~ s/(\w+)/\u\L$1/gx; # Normalise PLU case to "Title Case"
 
@@ -1036,7 +1036,7 @@ sub getOutputFileName
         die "Error opening $shopFilePath: $!";
     }
 
-    # Iterate through
+    # Iterate through shops and shop IDs
     while (my $row = <$shopIDFile>)
     {
         chomp($row); # Remove blank lines
