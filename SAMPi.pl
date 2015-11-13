@@ -555,9 +555,10 @@ sub parseHeader
         $currentEventHour = substr($currentEventTime, 0, 2);
 
         # When we have finished gathering data for the hour, we need to take it and write it out to the CSV file
-        # If we are debugging, we only use the hours in the serial headers to indicate the current hour  so that
-        # we don't have to wait until the clock hour changes to generate CSV data, in production we check both times
-        # If the current hour is different to the hour of the most recent transaction and this is not the beginning of the day
+        # If we are debugging, we only use the hours in the serial headers to indicate the current hour so that
+        # we don't have to wait until the clock hour changes to generate CSV data. In production we check both times
+
+        # If the current hour is different to the hour of the most recent transaction and this is not the beginning of the day...
         if ($hourlyTransactionData{"Hours"} ne "0" && $currentEventHour > substr($hourlyTransactionData{"Hours"}, 0, 2))
         {
             saveData(); 
@@ -931,7 +932,11 @@ sub generateCSV
     # Similarly, do not print to file if we already have data for the current event hour in the file
     if ($lastCalledHour == $currentEventHour)
     {
-        return;
+        unless (time() - $prevTransactionTime > $TRANSACTION_DELAY_SECONDS)
+        {
+            logMsg("generateCSV() has already been called for $currentEventHour, not generating");
+            return;
+        }
     }
     
     logMsg("Generating CSV for " . $hourlyTransactionData{"Hours"});
@@ -1236,7 +1241,7 @@ sub processData
                 {
                     # Save the raw data to the log file
                     storeLine("$serialDataLine\n");
-                    next; # Do not run the parser
+                    next; # Do not parse the data
                 }
 
                 # Store the data if data logging is enabled
