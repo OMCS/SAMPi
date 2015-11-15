@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+
+# Nagios plugin to determine whether SAMPi is currently running and the serial device is connected
+# It will warn if SAMPi.pl is not running, and return a critical error if the serial port is not connected
+# or the SAMPi daemon is not running
+
+if [ ! -e /dev/ttyUSB0 ]; then
+    echo "CRITICAL - Serial communications failure"
+    exit 2
+fi
+
+if ! pgrep perl > /dev/null; then
+    echo "WARNING - SAMPi.pl is not running"
+    exit 1
+fi
+
+numProcesses=$(ps aux | grep -c "[S]AMPiD")
+
+if [ $numProcesses != 6 ]; then
+    echo "CRITICAL - The SAMPi daemon is not running"
+    exit 2
+fi
+
+echo "OK - SAMPi status normal"
+exit 0
+
