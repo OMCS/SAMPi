@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# SAMPiD - Daemon for the SAMPi ECR tool (Last Modified 24/11/2015)
+# SAMPiD - Daemon for the SAMPi ECR tool (Last Modified 15/11/2015)
 #
 # This software should be set to run on every boot and will ensure that 
 # the main Perl program which reads data via serial, logs it and prepares
@@ -92,8 +92,8 @@ uploadData()
     cd /home/pi/SAMPi
     RELATIVE_DATA_PATH=./ecr_data
 
-    # rsync uses the archive, update (only send modified files), preserve time and verbose flags
-    rsync -autv $RELATIVE_DATA_PATH/* $USER@$SERVER:/
+    # rsync uses the archive, update (only send modified files) and preserve time flags
+    rsync -aut $RELATIVE_DATA_PATH/* $USER@$SERVER:/
 
     # If rsync did not work, we fall back to inefficient SFTP
     if [[ $? -gt 0 && $SFTP_ENABLED = true ]]; then
@@ -126,7 +126,7 @@ END
     fi
 
     # Update the local config directory if required, no fallback required as this isn't crucial
-    rsync -autv $USER@$SERVER:/config/* $SAMPI_PATH/config/
+    rsync -aut $USER@$SERVER:/config/* $SAMPI_PATH/config/
 }
 
 # Remove any data older than the threshold to preserve space on the device
