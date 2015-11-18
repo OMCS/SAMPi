@@ -51,7 +51,7 @@ use File::Touch; # Perl implementation of the UNIX 'touch' command
 
 # Globally accessible constants #
 
-Readonly our $VERSION => '1.0.4';
+Readonly our $VERSION => '1.1.0';
 
 Readonly my $MONITOR_MODE_ENABLED   => FALSE; # If enabled, SAMPi will not parse serial data and will simply store it
 Readonly my $STORE_DATA_ENABLED     => TRUE;  # If enabled, SAMPi will store data for analysis, in addition to parsing it 
