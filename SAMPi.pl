@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 #
-# SAMPi - SAM4S ECR data reader, parser and logger (Last Modified 12/11/2015)
+# SAMPi - SAM4S ECR data reader, parser and logger (Last Modified 17/11/2015)
 #
 # This software runs in the background on a suitably configured Raspberry Pi,
 # reads from a connected SAM4S ECR via serial connection, extracts various data,
@@ -51,7 +51,7 @@ use File::Touch; # Perl implementation of the UNIX 'touch' command
 
 # Globally accessible constants #
 
-Readonly our $VERSION => '1.0.4';
+Readonly our $VERSION => '1.0.5';
 
 Readonly my $MONITOR_MODE_ENABLED   => FALSE; # If enabled, SAMPi will not parse serial data and will simply store it
 Readonly my $STORE_DATA_ENABLED     => TRUE;  # If enabled, SAMPi will store data for analysis, in addition to parsing it 
@@ -318,7 +318,7 @@ sub isBusinessHours
     # Or false otherwise
     else
     {
-        unless ($idleMode)
+        unless ($idleMode || $VERBOSE_PARSER_ENABLED || $DEBUG_ENABLED) # Ignore idle mode if debugging parser
         {
             if (defined $csvFile)
             {
@@ -569,7 +569,7 @@ sub parseHeader
         {
             # Set the 'Hours' field accordingly, in the format "HH.00 - (HH+1).00"
             my $nextHour = sprintf("%02d", $currentEventHour+1);
-            $hourlyTransactionData{"Hours"} = "$currentEventHour.00-$nextHour.00";
+            $hourlyTransactionData{"Hours"} = sprintf("%02d.00-%02d.00", $currentEventHour, $nextHour);
 
             # Store the time of the first transaction
             $hourlyTransactionData{"First Transaction"} = $currentEventTime;           
@@ -737,7 +737,7 @@ sub parseTransaction
 
     if ($VERBOSE_PARSER_ENABLED)
     {
-        print "\tITEM FOR TRANSACTION $hourlyTransactionData{Customer Count}\n";
+        print "\tITEM FOR TRANSACTION $hourlyTransactionData{'Customer Count'}\n";
     }
 
     return;
@@ -1292,7 +1292,7 @@ sub main
     logMsg("SAMPi v$VERSION Initialising...");
 
     # Check for updates on startup
-    unless ($DEBUG_ENABLED)
+    unless ($DEBUG_ENABLED || $VERBOSE_PARSER_ENABLED)
     {
         checkForUpdate();
     }
