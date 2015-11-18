@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 #
-# SAMPi - SAM4S ECR data reader, parser and logger (Last Modified 12/11/2015)
+# SAMPi - SAM4S ECR data reader, parser and logger (Last Modified 17/11/2015)
 #
 # This software runs in the background on a suitably configured Raspberry Pi,
 # reads from a connected SAM4S ECR via serial connection, extracts various data,
@@ -168,6 +168,7 @@ my $lastSavedHour = "0"; # Store the hour we last saved when reading time from t
 my $currentPLU; # Store the current PLU, used when applying discounts 
 my $previousEventInvalid = FALSE; # Flag which prevents reprints and cancellations from being counted as the first / last event
 my $prevTransactionTime = 0; # Stores time of most recently read transaction, checked in order to save at the end of the day
+my $hourOffset = 0; # Used to handle daylight savings issues caused by ECRs which have not yet been updated
 
 # The following hash will contain the list of recognised PLUs, these will be read in from a file
 # We tie this hash to preserve the insertion order for later use in CSV columns, saves front-end work
@@ -318,7 +319,7 @@ sub isBusinessHours
     # Or false otherwise
     else
     {
-        unless ($idleMode)
+        unless ($idleMode || $VERBOSE_PARSER_ENABLED || $DEBUG_ENABLED) # Do not run if we are debugging the parser
         {
             if (defined $csvFile)
             {
@@ -482,14 +483,8 @@ sub saveData
         # Set the last transaction time
         $hourlyTransactionData{"Last Transaction"} = $previousEventTime;
 
-        # Ensure the value of card transactions is equal to TOTAL - CASH
-        my $difference = $hourlyTransactionData{"Total Takings"} - $hourlyTransactionData{"Cash"} - $hourlyTransactionData{"Credit Cards"};
-
-        # If the totals do not equal zero (approximate equality test required due to floating point values)
-        if ($difference > 1E-8)
-        {
-            $hourlyTransactionData{"Credit Cards"} = $difference;
-        }
+        # Ensure the total takings are correctly calculated from the cash and card totals
+        $hourlyTransactionData{"Total Takings"} = $hourlyTransactionData{"Cash"} + $hourlyTransactionData{"Credit Cards"};
 
         # Write the collected data to the CSV file and clear the data structure
         generateCSV();
@@ -559,7 +554,7 @@ sub parseHeader
         # we don't have to wait until the clock hour changes to generate CSV data. In production we check both times
 
         # If the current hour is different to the hour of the most recent transaction and this is not the beginning of the day...
-        if ($hourlyTransactionData{"Hours"} ne "0" && $currentEventHour > substr($hourlyTransactionData{"Hours"}, 0, 2))
+        if ($hourlyTransactionData{"Hours"} ne "0" && ($currentEventHour + $hourOffset) > substr($hourlyTransactionData{"Hours"}, 0, 2))
         {
             saveData(); 
         }
@@ -567,13 +562,38 @@ sub parseHeader
         # If no first transaction has been logged for the current hour
         if ($hourlyTransactionData{"First Transaction"} eq "0")
         {
-            # Set the 'Hours' field accordingly, in the format "HH.00 - (HH+1).00"
-            my $nextHour = sprintf("%02d", $currentEventHour+1);
-            $hourlyTransactionData{"Hours"} = "$currentEventHour.00-$nextHour.00";
+            # Make copies, do not modify $currentEvent variables!
+            my $thisHour = $currentEventHour; 
+            my $thisMinute = substr($currentEventTime,2,4);
+
+            state $incorrectECRTime = FALSE; # Determines if the ECR time is incorrect
+
+            # If this node and the ECR disagree on the current hour in production
+            # It most-likely means daylight savings time has come into or out of
+            #  effect and the time on the ECR has not yet been updated to reflect this
+            if (!$DEBUG_ENABLED && getCurrentHour() != $currentEventHour && !$incorrectECRTime)
+            {
+                $incorrectECRTime = TRUE;
+                logMsg("Hour reported by ECR appears to be off by one, compensating...");
+            }
+
+            if ($incorrectECRTime)
+            {
+                # Use the system hour in our output as the hour specified by the ECR is incorrect
+                # NB: SAMPi does not correct the time on collected data if it is off by more than one hour
+                (getCurrentHour() < $thisHour) ? $hourOffset = -1 : $hourOffset = 1;
+
+                $thisHour += $hourOffset;
+                
+            }
+
+            # Set the 'Hours' field in the data structure accordingly, in the format "HH.00 - (HH+1).00"
+            my $nextHour = sprintf("%02d", $thisHour + 1);
+            $hourlyTransactionData{"Hours"} = sprintf("%02d.00-%02d.00", $thisHour, $nextHour);
 
             # Store the time of the first transaction
-            $hourlyTransactionData{"First Transaction"} = $currentEventTime;           
-        }
+            $hourlyTransactionData{"First Transaction"} = $thisHour . ":" . $thisMinute;
+        }         
     }
 
     if ($VERBOSE_PARSER_ENABLED)
@@ -737,7 +757,7 @@ sub parseTransaction
 
     if ($VERBOSE_PARSER_ENABLED)
     {
-        print "\tITEM FOR TRANSACTION $hourlyTransactionData{Customer Count}\n";
+        print "\tITEM FOR TRANSACTION $hourlyTransactionData{'Customer Count'}\n";
     }
 
     return;
@@ -922,6 +942,8 @@ sub generateCSV
         initialiseOutputFile();
     }
 
+    ## BEGIN CHECKS ##
+
     # Sanity check, do not generate a row of CSV if there were no transactions in the previous hour
     if ($hourlyTransactionData{"Total Takings"} eq "0" || $hourlyTransactionData{"Customer Count"} <= 0)
     {
@@ -938,7 +960,9 @@ sub generateCSV
             return;
         }
     }
-    
+
+    ## END CHECKS ## 
+
     logMsg("Generating CSV for " . $hourlyTransactionData{"Hours"});
 
     # Iterate through the hourly transaction data
@@ -1292,7 +1316,7 @@ sub main
     logMsg("SAMPi v$VERSION Initialising...");
 
     # Check for updates on startup
-    unless ($DEBUG_ENABLED)
+    unless ($DEBUG_ENABLED || $VERBOSE_PARSER_ENABLED)
     {
         checkForUpdate();
     }
