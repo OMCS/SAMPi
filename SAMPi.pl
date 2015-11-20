@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 #
-# SAMPi - SAM4S ECR data reader, parser and logger (Last Modified 17/11/2015)
+# SAMPi - SAM4S ECR data reader, parser and logger (Last Modified 19/11/2015)
 #
 # This software runs in the background on a suitably configured Raspberry Pi,
 # reads from a connected SAM4S ECR via serial connection, extracts various data,
@@ -51,7 +51,7 @@ use File::Touch; # Perl implementation of the UNIX 'touch' command
 
 # Globally accessible constants #
 
-Readonly our $VERSION => '1.0.5';
+Readonly our $VERSION => '1.0.6';
 
 Readonly my $MONITOR_MODE_ENABLED   => FALSE; # If enabled, SAMPi will not parse serial data and will simply store it
 Readonly my $STORE_DATA_ENABLED     => TRUE;  # If enabled, SAMPi will store data for analysis, in addition to parsing it 
@@ -264,7 +264,7 @@ sub initialiseSerialPort
 {
     # 8N1 with software flow control by default
     Readonly my $SERIAL_PORT => ($^O =~ /Linux/i) ? "/dev/ttyUSB0" : "/dev/ttys008"; # This varies depending on current OS
-    Readonly my $BPS => 9600;
+    Readonly my $BPS => ($DEBUG_ENABLED) ? 19200 : 9600;
     Readonly my $DATA_BITS => 8;
     Readonly my $STOP_BITS => 1;
     Readonly my $PARITY => "none";
@@ -482,13 +482,10 @@ sub saveData
         # Set the last transaction time
         $hourlyTransactionData{"Last Transaction"} = $previousEventTime;
 
-        # Ensure the value of card transactions is equal to TOTAL - CASH
-        my $difference = $hourlyTransactionData{"Total Takings"} - $hourlyTransactionData{"Cash"} - $hourlyTransactionData{"Credit Cards"};
-
-        # If the totals do not equal zero (approximate equality test required due to floating point values)
-        if ($difference > 1E-8)
+        # Fix disparities between the total takings and the cash total
+        if ($hourlyTransactionData{"Credit Cards"} == 0)
         {
-            $hourlyTransactionData{"Credit Cards"} = $difference;
+            $hourlyTransactionData{"Total Takings"} = $hourlyTransactionData{"Cash"};
         }
 
         # Write the collected data to the CSV file and clear the data structure
@@ -652,7 +649,17 @@ sub adjustCashTotal
 sub adjustChange
 {
     my ($changeValue) = @_;
-    $hourlyTransactionData{"Cash"} = $hourlyTransactionData{"Cash"} - $changeValue;
+
+    if ($currentPLU =~ "CARD:") # Change should not follow a card transaction, handle cashiers hitting 'CARD' instead of 'CASH'
+    {
+        logMsg("Change detected after card transaction, correcting...");
+        my $adjustedAmount = (split(':', $currentPLU, 2))[1]; # Get value of erroneous card transaction
+        $hourlyTransactionData{"Credit Cards"} -= $adjustedAmount; # Subtract value erroneously added to card total
+        $hourlyTransactionData{"Cash"} += $adjustedAmount; # Add it to cash where it should be
+    }
+
+    $hourlyTransactionData{"Cash"} -= $changeValue; # Remove change from cash total
+
     return;
 }
 
@@ -661,6 +668,7 @@ sub adjustCardTotal
 {
     my ($cardTotal) = @_;
     adjustTotal($cardTotal, "Credit Cards");
+    $currentPLU = "CARD:$cardTotal"; # Record value if hit accidentally
     return;
 }
 
