@@ -1,17 +1,15 @@
 #!/usr/bin/env bash
 
-# Simple Nagios plugin to test the local network address of a connected CCTV camera and ensure it is accessible
+# Simple Nagios plugin to check that new snapshots are coming into the CCTV folder
 
-cameraIP=$(ifconfig wlan0 > /dev/null 2>&1 | grep "inet addr" | cut -d ':' -f2 | cut -d ' ' -f1 | cut -d '.' -f 1-3)
+NUM_FILES_1=$(ls -1 /mnt/cctv/*/snap/* | wc -l)
+sleep 2
+NUM_FILES_2=$(ls -1 /mnt/cctv/*/snap/* | wc -l)
 
-# All CCTV will be set to the *.*.*.123
-netcat $cameraIP.123 88 > /dev/null 2>&1
-
-if [ $? != 0 ]; then
-    echo "WARNING - CCTV appears to be down"
-    exit 1
+if [ "$NUM_FILES_1" == "$NUM_FILES_2" ]; then
+	echo "CRITICAL - CCTV not uploading"
+	exit 2
 else
-    echo "OK - CCTV is accessible"
-    exit 0
+	echo "OK - CCTV running"
+	exit 0
 fi
-

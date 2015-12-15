@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 #
-# SAMPi - SAM4S ECR data reader, parser and logger (Last Modified 19/11/2015)
+# SAMPi - SAM4S (400, 500) ECR data reader, parser and logger (Last Modified 15/12/2015)
 #
 # This software runs in the background on a suitably configured Raspberry Pi,
 # reads from a connected SAM4S ECR via serial connection, extracts various data,
@@ -51,14 +51,15 @@ use File::Touch; # Perl implementation of the UNIX 'touch' command
 
 # Globally accessible constants #
 
-Readonly our $VERSION => '1.0.6';
+Readonly our $VERSION => '1.1';
 
-Readonly my $MONITOR_MODE_ENABLED   => FALSE; # If enabled, SAMPi will not parse serial data and will simply store it
-Readonly my $STORE_DATA_ENABLED     => TRUE;  # If enabled, SAMPi will store data for analysis, in addition to parsing it 
-Readonly my $UPDATE_HOOK_ENABLED    => FALSE; # Attempt to call the postUpdate() function once on start if TRUE
-Readonly my $LOGGING_ENABLED        => TRUE;  # Enable or disable logging info / warnings / errors to file
-Readonly my $VERBOSE_PARSER_ENABLED => FALSE; # If enabled, the parser will print information to STDOUT as it runs
-Readonly my $DEBUG_ENABLED          => (@ARGV > 0) ? TRUE : FALSE; # If enabled, will read time solely from serial data
+Readonly my $MONITOR_MODE_ENABLED       => FALSE; # If enabled, SAMPi will not parse serial data and will simply store it
+Readonly my $STORE_DATA_ENABLED         => TRUE;  # If enabled, SAMPi will store data for analysis, in addition to parsing it 
+Readonly my $UPDATE_HOOK_ENABLED        => FALSE; # Attempt to call the postUpdate() function once on start if TRUE
+Readonly my $LOGGING_ENABLED            => TRUE;  # Enable or disable logging info / warnings / errors to file
+Readonly my $VERBOSE_PARSER_ENABLED     => FALSE; # If enabled, the parser will print information to STDOUT as it runs
+Readonly my $DEBUG_ENABLED              => (@ARGV > 0) ? TRUE : FALSE; # If enabled, will read time solely from serial data
+Readonly my $SAM4S_520                  => (-e "./config/520") ? TRUE : FALSE; # Use 520 specific code where necessary
 
 Readonly my $DIRECTORY_SEPARATOR        => ($^O =~ /^Win/ix) ? "\\" : "/"; # Ternary operator used for brevity, included for future W32 compatability
 Readonly my $CURRENT_VERSION_PATH       => abs_path($0);
@@ -84,25 +85,28 @@ Readonly my %PARSER_EVENTS =>
     "FOOTER" => 4
 );
 
+# Header format differs between 420 and 520 output, 420 includes date / time information
+Readonly my $HEADER_REGEX => (!$SAM4S_520) ? qr/^\d{1,2}\/\d{2}\/\d{4}/x : qr/REGISTER\sMODE/x;
+
 # Dispatch table (array of hashes) to simplify parsing and remove the need for long if-else chains
 # Links a regex, which matches a line of data, to the action to call when a match is discovered 
 Readonly my @EVENT_DISPATCH_TABLE => 
 (
     {
         parser => \&parseHeader,
-        regexp => qr/^\d{1,2}\/\d{2}\/\d{4}/x, # Begins with a date in [d]d/mm/yyyy format
+        regexp => $HEADER_REGEX, # Defined above, the header for the 420 is more verbose than the 520 output we are able to receive
     },
     {
         parser => \&parseFooter,
-        regexp => qr/^CLERK/x, # Begins with "CLERK", delimits transactions (although reprints are printed beneath)
+        regexp => qr/^CLERK/x, # Begins with "CLERK", delimits 420 transactions (although reprints are printed beneath this line)
     },
     {
         parser => \&parseReport,
-        regexp => qr/REPORT/x, # Contains "REPORT"
+        regexp => qr/REPORT/x, # Contains "REPORT", 420 only
     },
     {
         parser => \&parseCancel,
-        regexp => qr/^CANCEL/x, # Begins with "CANCEL"
+        regexp => qr/CANCEL/x, # Contains "CANCEL"
     },
     {
         parser => \&parseReprint,
@@ -114,7 +118,7 @@ Readonly my @EVENT_DISPATCH_TABLE =>
     },   
     {
         parser => \&parseNoSale,
-        regexp => qr/NOSALE/x, # Contains "NOSALE", these need to be recorded
+        regexp => qr/(NOSALE|NS)/x, # Contains "NOSALE", these need to be recorded
     },
     {
         parser => \&parseDiagnostic,
@@ -122,7 +126,7 @@ Readonly my @EVENT_DISPATCH_TABLE =>
     }
 );
 
-# Similar dispatch table for processing various transaction data
+# Similar dispatch table for processing various transaction data, some functions only apply to the 420
 Readonly my @TRANSACTION_DISPATCH_TABLE =>
 (
     {
@@ -169,6 +173,10 @@ my $currentPLU; # Store the current PLU, used when applying discounts
 my $previousEventInvalid = FALSE; # Flag which prevents reprints and cancellations from being counted as the first / last event
 my $prevTransactionTime = 0; # Stores time of most recently read transaction, checked in order to save at the end of the day
 
+# 500 Series Variables
+my @dataBuffer; # Buffer for stored serial data, required for 520 parsing
+my $ignoreHeaders = FALSE; # Required to allow cancellations to work correctly
+
 # The following hash will contain the list of recognised PLUs, these will be read in from a file
 # We tie this hash to preserve the insertion order for later use in CSV columns, saves front-end work
 my  %PLUList;
@@ -197,6 +205,10 @@ tie %hourlyTransactionData, "Tie::IxHash";
 # Copy for reverting to if required
 my  %hourlyTransactionDataCopy;
 tie %hourlyTransactionDataCopy, "Tie::IxHash";
+
+# Signals #
+
+$SIG{INFO} = sub { print Dumper(\%hourlyTransactionData);}; # Print $hourlyTransactionData on demand
 
 # Functions #
 
@@ -259,12 +271,14 @@ sub logMsg
 }
 
 # This function initialises the serial port with the correct settings
-# Modify this function if you require different settings 
 sub initialiseSerialPort
 {
+    # Get correct file descriptor
+    Readonly my $SERIAL_PORT => ($^O =~ /Linux/i) ? "/dev/ttyUSB0" : "/dev/tty.usbserial"; # This varies depending on current OS
+    #Readonly my $SERIAL_PORT => "/dev/ttys008"; # Virtual serial port
+
     # 8N1 with software flow control by default
-    Readonly my $SERIAL_PORT => ($^O =~ /Linux/i) ? "/dev/ttyUSB0" : "/dev/ttys008"; # This varies depending on current OS
-    Readonly my $BPS => ($DEBUG_ENABLED) ? 19200 : 9600;
+    Readonly my $BPS => ($DEBUG_ENABLED || $SAM4S_520) ? 115200 : 9600; # Higher baud rate for debugging or newer ECR
     Readonly my $DATA_BITS => 8;
     Readonly my $STOP_BITS => 1;
     Readonly my $PARITY => "none";
@@ -286,8 +300,18 @@ sub initialiseSerialPort
     $serialPort->parity($PARITY);
     $serialPort->handshake($HANDSHAKE);
 
-    # Set lookfor() to match EOL characters so that we can read data line by line
-    $serialPort->are_match( "\r", "\n" );
+    if ($SAM4S_520)
+    {
+        # The data available from the 520 is not well-delimited, so we match ASCII escape characters
+        $serialPort->are_match("\e", "-re", "*CANCEL*", "-re", "CHANGE\\s\\d{1,2}\.\\d{2}"); # Also match CANCEL notice "CHANGE\s£x.xx" as delimiters
+    }
+
+    else
+    {
+        # Set lookfor() to match EOL characters so that we can read data line by line
+        $serialPort->are_match("\r", "\n");
+    }
+
     $serialPort->lookclear;  
 
     logMsg("Opened serial port $SERIAL_PORT at $BPS" . "BPS");
@@ -522,6 +546,12 @@ sub parseHeader
 {
     my ($headerLine) = @_;
 
+    # Ignore headers if we are on a 520 and in the middle of a transaction
+    if ($SAM4S_520 && $ignoreHeaders)
+    {
+        return;
+    }
+
     # Make a copy of the current transaction data so we can revert if required
     saveState();
 
@@ -539,38 +569,55 @@ sub parseHeader
     }
 
     $previousEventInvalid = FALSE; # Clear invalid event flag
+    $prevTransactionTime = time(); # Set the time of the previous transaction in UNIX format
 
     # Extract the event time into the $1 reserved variable
     $headerLine =~ /([0-9][0-9]:[0-9][0-9])/x;
 
-    # Check that the extraction succeeded 
+    # Check that the extraction succeeded, if so we are connected to a 420
     if ($1)
     {
-        $prevTransactionTime = time();
 
         $currentEventTime = $1; 
-        $currentEventHour = substr($currentEventTime, 0, 2);
+    }
 
-        # When we have finished gathering data for the hour, we need to take it and write it out to the CSV file
-        # If we are debugging, we only use the hours in the serial headers to indicate the current hour so that
-        # we don't have to wait until the clock hour changes to generate CSV data. In production we check both times
+    # Otherwise we are connected to a 520 and need to use the system clock instead of the time from the till
+    elsif ($SAM4S_520)
+    {
+        my (undef, $currentMinute, $currentHour) = localtime();
+        $currentEventTime = sprintf("%02d:%02d", $currentHour, $currentMinute);
+        $ignoreHeaders = TRUE; # Ignore erroneous header messages
+    }
 
-        # If the current hour is different to the hour of the most recent transaction and this is not the beginning of the day...
-        if ($hourlyTransactionData{"Hours"} ne "0" && $currentEventHour > substr($hourlyTransactionData{"Hours"}, 0, 2))
-        {
-            saveData(); 
-        }
+    # Otherwise we are not inside a valid header line
+    else
+    {
+        logMsg("Unidentified header detected: $headerLine");
+        return;
+    }
 
-        # If no first transaction has been logged for the current hour
-        if ($hourlyTransactionData{"First Transaction"} eq "0")
-        {
-            # Set the 'Hours' field accordingly, in the format "HH.00 - (HH+1).00"
-            my $nextHour = sprintf("%02d", $currentEventHour+1);
-            $hourlyTransactionData{"Hours"} = sprintf("%02d.00-%02d.00", $currentEventHour, $nextHour);
+    # Get just the hour
+    $currentEventHour = substr($currentEventTime, 0, 2);
 
-            # Store the time of the first transaction
-            $hourlyTransactionData{"First Transaction"} = $currentEventTime;           
-        }
+    # When we have finished gathering data for the hour, we need to take it and write it out to the CSV file
+    # If we are debugging, we only use the hours in the serial headers to indicate the current hour so that
+    # we don't have to wait until the clock hour changes to generate CSV data. In production we check both times
+
+    # If the current hour is different to the hour of the most recent transaction and this is not the beginning of the day...
+    if ($hourlyTransactionData{"Hours"} ne "0" && $currentEventHour > substr($hourlyTransactionData{"Hours"}, 0, 2))
+    {
+        saveData(); 
+    }
+
+    # If no first transaction has been logged for the current hour
+    if ($hourlyTransactionData{"First Transaction"} eq "0")
+    {
+        # Set the 'Hours' field accordingly, in the format "HH.00 - (HH+1).00"
+        my $nextHour = sprintf("%02d", $currentEventHour+1);
+        $hourlyTransactionData{"Hours"} = sprintf("%02d.00-%02d.00", $currentEventHour, $nextHour);
+
+        # Store the time of the first transaction
+        $hourlyTransactionData{"First Transaction"} = $currentEventTime;           
     }
 
     if ($VERBOSE_PARSER_ENABLED)
@@ -580,6 +627,11 @@ sub parseHeader
     
     # Set the current parser state
     $currentEvent = $PARSER_EVENTS{HEADER};
+    
+    if ($SAM4S_520)
+    {
+        $ignoreHeaders = TRUE; # Ignore subsequent 'headers' until we reach the end of a transaction
+    }
 
     return;
 }
@@ -624,8 +676,12 @@ sub adjustTotal
 
     if (not defined $totalFor)
     {
-        # Increment the transaction count, can decrement later if we read a cancel or a reprint
-        $hourlyTransactionData{"Customer Count"}++; 
+        # 520 customer count is incremented in the 'CHANGE' parser
+        unless ($SAM4S_520)
+        {
+            # Increment the transaction count, can decrement later if we read a cancel or a reprint
+            $hourlyTransactionData{"Customer Count"}++; 
+        }
 
         # Overall total will be adjusted
         $totalFor = "Total Takings"; 
@@ -638,7 +694,7 @@ sub adjustTotal
 }
 
 # Handle Cash Total
-sub adjustCashTotal
+sub adjustCashTotal 
 {
     my ($cashTotal) = @_;
     adjustTotal($cashTotal, "Cash");
@@ -656,6 +712,17 @@ sub adjustChange
         my $adjustedAmount = (split(':', $currentPLU, 2))[1]; # Get value of erroneous card transaction
         $hourlyTransactionData{"Credit Cards"} -= $adjustedAmount; # Subtract value erroneously added to card total
         $hourlyTransactionData{"Cash"} += $adjustedAmount; # Add it to cash where it should be
+    }
+
+    if ($SAM4S_520)
+    {
+        $hourlyTransactionData{"Customer Count"}++;  # Increment customer count when reaching 'change' on the 520, last element of a transaction
+        $changeValue =~ s/$CURRENCY_SYMBOL//g; # Remove the currency symbol before we subtract
+
+        if ($ignoreHeaders)
+        {
+            $ignoreHeaders = FALSE; # We have reached the end of a transaction so we can listen for headers again
+        }
     }
 
     $hourlyTransactionData{"Cash"} -= $changeValue; # Remove change from cash total
@@ -684,7 +751,7 @@ sub adjustDiscount
 
 # This function parses transactions, each is part of a group and contains the PLU and price for one or more items. 
 # These are processed as key-value pairs with validation to remove lines that are invalid or do not represent PLUs (e.g. totals)
-# Similarly to the parseLine() function, this function makes use of a dispatch table instead of a long if-elsif-else construct
+# Similarly to the parseChunk() function, this function makes use of a dispatch table instead of a long if-elsif-else construct
 sub parseTransaction
 {
     my ($transactionLine) = @_;
@@ -728,6 +795,12 @@ sub parseTransaction
             # Add the transaction value to the hourly total for this PLU
             $hourlyTransactionData{"PLU"}{$transactionKey} += $transactionValue; 
             $currentPLU = $transactionKey;
+
+            # Increment total (520 only, parser waits for TOTAL line on the 420)
+            if ($SAM4S_520)
+            {
+                adjustTotal($transactionValue); 
+            }
         }
 
         else
@@ -745,7 +818,8 @@ sub parseTransaction
 
     if ($VERBOSE_PARSER_ENABLED)
     {
-        print "\tITEM FOR TRANSACTION $hourlyTransactionData{'Customer Count'}\n";
+        print "\tITEM FOR TRANSACTION $hourlyTransactionData{'Customer Count'} at $transactionValue\n";
+        ($SAM4S_520 && $VERBOSE_PARSER_ENABLED) ? print Dumper(\%hourlyTransactionData) : 0; # Print debug info for 520
     }
 
     return;
@@ -798,15 +872,22 @@ sub parseDiagnostic
     }
 }
 
-# This function is responsible for parsing a line of serial data and storing various information which is later converted to CSV
+# This function is responsible for parsing a unit of serial data and storing various information which is later converted to CSV
 # A dispatch table is used in preference to a long if-elsif-else chain as it is more efficient and easier to maintain
-sub parseLine
+sub parseChunk
 {
-    # The line of data passed in as a parameter will be accessible as $dataLine
-    my ($dataLine) = @_;
+    # The chunk (line or section) of data passed in as a parameter will be accessible as $dataChunk
+    my ($dataChunk) = @_;
+
+    # Additional debugging for 500 Series
+    if ($SAM4S_520 && $DEBUG_ENABLED)
+    {
+        print "RECEIVED: $dataChunk\n";
+    }
 
     # Remove any errant hex values or question marks returned by the serial port
-    $dataLine = normaliseData($dataLine);
+    # This function makes more drastic changes to the 520 data due to the poor parsability
+    $dataChunk = normaliseData($dataChunk);
 
     # Set previous event correctly depending on type of last processed data line
     setPreviousEvent();
@@ -815,17 +896,17 @@ sub parseLine
     # Lines matching a header will call parseHeader(), etc.
     foreach my $dataType (@EVENT_DISPATCH_TABLE) 
     {
-        if ($dataLine =~ $dataType->{regexp}) 
+        if ($dataChunk =~ $dataType->{regexp}) 
         {
             # Call the appropriate parsing function with the current line as a parameter
-            $dataType->{parser}->($dataLine);
+            $dataType->{parser}->($dataChunk);
             return;
         }
     }
 
     # If nothing in the dispatch table matched, we could be dealing with a transaction
     # More validation is performed within the function to check if this is the case
-    parseTransaction($dataLine);
+    parseTransaction($dataChunk);
 
     return;
 }
@@ -854,7 +935,7 @@ sub loadState
     $previousEventInvalid = TRUE;
     %hourlyTransactionData = %hourlyTransactionDataCopy;
 
-    unless ($currentEvent == $PARSER_EVENTS{FOOTER}) # XXX: This may not be required, deprecate in future versions
+    unless ($currentEvent == $PARSER_EVENTS{FOOTER}) # XXX: This may not be required
     {
         $currentEvent = $PARSER_EVENTS{OTHER};
     }
@@ -867,7 +948,7 @@ sub loadState
 ## no critic qw(RequireBriefOpen)
 sub storeLine
 {
-    my ($dataLine) = @_;
+    my ($dataChunk) = @_;
 
     my @date = getCurrentDate();
     $dataLogFilePath = $ENV{'HOME'} . $DIRECTORY_SEPARATOR . "serial_log_" . $date[2] . ".dat"; 
@@ -885,7 +966,7 @@ sub storeLine
         $dataOpen = TRUE;
     }
 
-    print $serialLog $dataLine;
+    print $serialLog $dataChunk;
 
     return;
 }
@@ -1005,17 +1086,43 @@ sub normaliseStr
 }
 
 # This function normalises serial data by removing values which should not be seen by the parser
+# It also makes certain additions and formatting fixes before passing thw data to the parser
+# As the only data available from the 520 is the POLL output, greater normalisation is required
 sub normaliseData
 {
-    my ($dataLine) = @_;
+    my ($dataChunk) = @_;
 
-    # Remove hex characters, question marks, etc.
-    $dataLine =~ s/\x{00}//gx;
-    $dataLine =~ s/\x{c2}//gx;
-    $dataLine =~ s/\x{9c}/$CURRENCY_SYMBOL/gx;
-    $dataLine =~s/\?/$CURRENCY_SYMBOL/gx;
+    # 420 Normalisation
+    unless ($SAM4S_520)
+    {
+        # Remove hexadecimal non-printing characters, question marks, etc.
+        $dataChunk =~ s/\x{00}//gx; # Remove ASCII nulls
+        $dataChunk =~ s/\x{c2}//gx; # Remove control characters
+        $dataChunk =~ s/\x{9c}/$CURRENCY_SYMBOL/gx; # Replace unicode character with currency symbol
+        $dataChunk =~s/\?/$CURRENCY_SYMBOL/gx; # As above for question marks
+    }
 
-    return $dataLine;
+    # 520 Normalisation
+    else
+    {
+        $dataChunk =~ s/\@//gx; # Remove literal '@' symbols from data
+        $dataChunk =~ s/\s[0-9]\s//gx; # Remove quantity specifiers (may be required in future)
+        $dataChunk =~ s/(\d{1,2}.\d{2})/$CURRENCY_SYMBOL$1/gx; # Prepend currency symbol to values
+
+        # Handle the fact that cash and change values appear on one line and the parser is line-based 
+        # Detect the CASH chunk (which also contains the change
+        if (index($dataChunk, "CASH") != -1)
+        {
+            my @sale = split('(CHANGE)', $dataChunk); # Split the chunk and keep the (delimiter)
+            $sale[1] = $sale[1] . $sale[2]; # Combine the contents of the latter two indices, this is the 'CHANGE' identifier and the value
+
+            $dataChunk = $sale[0]; # This sets $dataChunk to the normalised CASH / CARD identifier and value, process this first
+
+            push(@dataBuffer, $sale[1]); # Push the change value into the databuffer, will be processed on next clear
+        }
+    }
+
+    return $dataChunk;
 }
 
 # This function reads in the "shops.csv" file in the config subdirectory and assigns an ID based on
@@ -1242,24 +1349,30 @@ sub processData
             }
 
             # Wait until we have read a line of data 
-            if (my $serialDataLine = $serialPort->lookfor()) 
+            if (my $serialDataChunk = $serialPort->lookfor()) 
             {
                 # If we are in monitor mode
                 if ($MONITOR_MODE_ENABLED)
                 {
                     # Save the raw data to the log file
-                    storeLine("$serialDataLine\n");
+                    storeLine("$serialDataChunk\n");
                     next; # Do not parse the data
                 }
 
                 # Store the data if data logging is enabled
                 if ($STORE_DATA_ENABLED)
                 {
-                    storeLine("$serialDataLine\n");
+                    storeLine("$serialDataChunk\n");
                 }
 
-                # Parse the line of data
-                parseLine($serialDataLine);
+                # Sometimes data needs to be stored in a buffer for later processing (the 520 requires this to process cash and change)
+                if (@dataBuffer)
+                {
+                    parseChunk(shift @dataBuffer); # Parse whatever is in the data buffer
+                }
+
+                # Parse the most recently received chunk of data
+                parseChunk($serialDataChunk);
             }
             
             $storeIsOpen = isBusinessHours(); # Test if we are still running during opening hours 
@@ -1315,6 +1428,11 @@ sub main
     if ($MONITOR_MODE_ENABLED)
     {
         logMsg("MONITOR MODE ENABLED, STORING DATA");
+    }
+
+    if ($SAM4S_520)
+    {
+        logMsg("SAMPi 520 Mode Enabled");
     }
 
     # Initialise port and start processing data
