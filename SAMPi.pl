@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 #
-# SAMPi - SAM4S (400, 500) ECR data reader, parser and logger (Last Modified 15/12/2015)
+# SAMPi - SAM4S (400, 500) ECR data reader, parser and logger (Last Modified 16/12/2015)
 #
 # This software runs in the background on a suitably configured Raspberry Pi,
 # reads from a connected SAM4S ECR via serial connection, extracts various data,
@@ -1139,6 +1139,7 @@ sub getOutputFileName
 
     # Undef if not matched
     my $matchedID = undef;
+    my $numberInHostname = undef;
 
     # Get the current date for use in the filename
     my @currentDate = getCurrentDate();
@@ -1161,7 +1162,16 @@ sub getOutputFileName
         # Normalise the strings for comparison
         $shopName        = normaliseStr($shopName);
         $currentHostname = normaliseStr($currentHostname);
-        
+
+        # Check for a number in the hostname
+        (my $numberInHostname) = $currentHostname =~ m/\d/g;
+
+        if ($numberInHostname)
+        {
+            # Remove the number for now
+            $currentHostname =~ s/\d//gx;
+        }
+    
         # Check if normalised hostname exactly matches normalised shop name
         if ($currentHostname =~ /^$shopName$/x)
         {
@@ -1180,10 +1190,10 @@ sub getOutputFileName
     }
 
     # Otherwise, check if this is a store with multiple ECR units and append to the filename to avoid conflicts if so
-    if ($matchedID ne "UNKNOWN" && $currentHostname =~ /([0-9])/x)
+    if ($matchedID ne "UNKNOWN" && $numberInHostname)
     {
         # This relies on the hostname having a number appended to it and no single-till stores having numbers in their hostname
-        $matchedID .= "_$1";
+        $matchedID .= "_$numberInHostname";
     }
 
     # Set the filename in the format "yyyymmdd_$matchedID.csv"
