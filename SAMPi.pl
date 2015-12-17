@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 #
-# SAMPi - SAM4S (400, 500) ECR data reader, parser and logger (Last Modified 16/12/2015)
+# SAMPi - SAM4S (400, 500) ECR data reader, parser and logger (Last Modified 17/12/2015)
 #
 # This software runs in the background on a suitably configured Raspberry Pi,
 # reads from a connected SAM4S ECR via serial connection, extracts various data,
@@ -51,7 +51,7 @@ use File::Touch; # Perl implementation of the UNIX 'touch' command
 
 # Globally accessible constants #
 
-Readonly our $VERSION => '1.1';
+Readonly our $VERSION => '1.1.1';
 
 Readonly my $MONITOR_MODE_ENABLED       => FALSE; # If enabled, SAMPi will not parse serial data and will simply store it
 Readonly my $STORE_DATA_ENABLED         => TRUE;  # If enabled, SAMPi will store data for analysis, in addition to parsing it 
@@ -1164,11 +1164,14 @@ sub getOutputFileName
         $currentHostname = normaliseStr($currentHostname);
 
         # Check for a number in the hostname
-        (my $numberInHostname) = $currentHostname =~ m/\d/g;
+        $currentHostname =~ m/(\d)/g;
 
-        if ($numberInHostname)
+        if ($1)
         {
-            # Remove the number for now
+            # Store the result
+            $numberInHostname = $1;
+
+            # Remove the number from the hostname for now so shop ID matching works
             $currentHostname =~ s/\d//gx;
         }
     
@@ -1182,7 +1185,7 @@ sub getOutputFileName
 
     close $shopIDFile;
 
-    # If we couldn't find a match, set $matchedID to "OTHER" and log a warning
+    # If we couldn't find a match, set $matchedID to "UNKNOWN" and log a warning
     unless ($matchedID)
     {
         $matchedID = "UNKNOWN";
