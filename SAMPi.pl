@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 #
-# SAMPi - SAM4S (400, 500) ECR data reader, parser and logger (Last Modified 17/12/2015)
+# SAMPi - SAM4S (400, 500) ECR data reader, parser and logger (Last Modified 18/12/2015)
 #
 # This software runs in the background on a suitably configured Raspberry Pi,
 # reads from a connected SAM4S ECR via serial connection, extracts various data,
@@ -208,7 +208,7 @@ tie %hourlyTransactionDataCopy, "Tie::IxHash";
 
 # Signals #
 
-$SIG{INFO} = sub { print Dumper(\%hourlyTransactionData);}; # Print $hourlyTransactionData on demand
+$SIG{USR1} = sub { print Dumper(\%hourlyTransactionData);}; # Print $hourlyTransactionData on demand
 
 # Functions #
 
