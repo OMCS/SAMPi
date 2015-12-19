@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 #
-# SAMPi - SAM4S (400, 500) ECR data reader, parser and logger (Last Modified 18/12/2015)
+# SAMPi - SAM4S (400, 500) ECR data reader, parser and logger (Last Modified 19/12/2015)
 #
 # This software runs in the background on a suitably configured Raspberry Pi,
 # reads from a connected SAM4S ECR via serial connection, extracts various data,
@@ -208,7 +208,7 @@ tie %hourlyTransactionDataCopy, "Tie::IxHash";
 
 # Signals #
 
-$SIG{USR1} = sub { print Dumper(\%hourlyTransactionData);}; # Print $hourlyTransactionData on demand
+$SIG{USR1} = sub { print Dumper(\%hourlyTransactionData); }; # Print %hourlyTransactionData on demand
 
 # Functions #
 
@@ -571,13 +571,9 @@ sub parseHeader
     $previousEventInvalid = FALSE; # Clear invalid event flag
     $prevTransactionTime = time(); # Set the time of the previous transaction in UNIX format
 
-    # Extract the event time into the $1 reserved variable
-    $headerLine =~ /([0-9][0-9]:[0-9][0-9])/x;
-
-    # Check that the extraction succeeded, if so we are connected to a 420
-    if ($1)
+    # Check for a time in the header variable, if so we are connected to a 420
+    if ($headerLine =~ /([0-9][0-9]:[0-9][0-9])/)
     {
-
         $currentEventTime = $1; 
     }
 
@@ -1164,9 +1160,7 @@ sub getOutputFileName
         $currentHostname = normaliseStr($currentHostname);
 
         # Check for a number in the hostname
-        $currentHostname =~ m/(\d)/g;
-
-        if ($1)
+        if ($currentHostname =~ m/(\d)/g)
         {
             # Store the result
             $numberInHostname = $1;
