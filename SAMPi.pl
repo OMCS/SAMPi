@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 #
-# SAMPi - SAM4S (400, 500) ECR data reader, parser and logger (Last Modified 19/12/2015)
+# SAMPi - SAM4S (400, 500) ECR data reader, parser and logger (Last Modified 20/12/2015)
 #
 # This software runs in the background on a suitably configured Raspberry Pi,
 # reads from a connected SAM4S ECR via serial connection, extracts various data,
@@ -51,7 +51,7 @@ use File::Touch; # Perl implementation of the UNIX 'touch' command
 
 # Globally accessible constants #
 
-Readonly our $VERSION => '1.1.1';
+Readonly our $VERSION => '1.1.2';
 
 Readonly my $MONITOR_MODE_ENABLED       => FALSE; # If enabled, SAMPi will not parse serial data and will simply store it
 Readonly my $STORE_DATA_ENABLED         => TRUE;  # If enabled, SAMPi will store data for analysis, in addition to parsing it 
@@ -161,6 +161,7 @@ my $csvOpen = FALSE; # Flag which determines whether a csv output file is curren
 my $serialLog; # Serial log descriptor (monitor mode only)
 my $dataOpen = FALSE; # Determines if serial log file has been opened (if data logging is enabled)
 my $dataLogFilePath; # File path for logged serial data, cleared daily when SAMPi goes into idle mode
+my $logFile; # File descriptor for the SAMPi system log file
 
 # Parser State
 my $previousEvent = $PARSER_EVENTS{OTHER}; # Track the previous event, used for counting transactions
@@ -208,7 +209,7 @@ tie %hourlyTransactionDataCopy, "Tie::IxHash";
 
 # Signals #
 
-$SIG{USR1} = sub { print Dumper(\%hourlyTransactionData); }; # Print %hourlyTransactionData on demand
+$SIG{USR1} = sub { print $logFile Dumper (\%hourlyTransactionData); }; # Print %hourlyTransactionData to log on demand
 
 # Functions #
 
@@ -244,7 +245,6 @@ sub logMsg
     # Write message to file if logging is enabled
     if ($LOGGING_ENABLED)
     {
-        state $logFile; # File descriptor for the log file we have created or are about to create
         state $logOpen = FALSE; # Static flag to determine if the log file has been opened during the current execution
 
         unless ($logOpen)
