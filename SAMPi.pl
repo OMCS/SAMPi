@@ -51,7 +51,7 @@ use File::Touch; # Perl implementation of the UNIX 'touch' command
 
 # Globally accessible constants #
 
-Readonly our $VERSION => '1.1.2';
+Readonly our $VERSION => '1.1.3';
 
 Readonly my $MONITOR_MODE_ENABLED       => FALSE; # If enabled, SAMPi will not parse serial data and will simply store it
 Readonly my $STORE_DATA_ENABLED         => TRUE;  # If enabled, SAMPi will store data for analysis, in addition to parsing it 
@@ -148,7 +148,7 @@ Readonly my @TRANSACTION_DISPATCH_TABLE =>
     },
     {
         parser => \&adjustDiscount, # Handle discounts
-        regexp => qr/^AMOUNT/x, # Begins with "AMOUNT", represents a discount 
+        regexp => qr/(^AMOUNT|.(%).)/x, # Begins with "AMOUNT" or includes a percentage sign that isn't at the beginning or end of a line (520), represents a discount 
     }
 );
 
@@ -740,7 +740,13 @@ sub adjustDiscount
 {
     my ($discountValue) = @_;
     print "Adjusting $currentPLU total for discount of $discountValue\n";
-    $hourlyTransactionData{"PLU"}{$currentPLU} += $discountValue;
+    $hourlyTransactionData{"PLU"}{$currentPLU} += $discountValue; # Discount value is always negative
+
+    # Need to remove the discounted value from the overall total on the 520
+    if ($SAM4S_520)
+    {
+        adjustTotal($discountValue);
+    }
 
     return;
 }
