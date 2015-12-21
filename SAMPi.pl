@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 #
-# SAMPi - SAM4S (400, 500) ECR data reader, parser and logger (Last Modified 20/12/2015)
+# SAMPi - SAM4S (400, 500) ECR data reader, parser and logger (Last Modified 21/12/2015)
 #
 # This software runs in the background on a suitably configured Raspberry Pi,
 # reads from a connected SAM4S ECR via serial connection, extracts various data,
@@ -51,7 +51,7 @@ use File::Touch; # Perl implementation of the UNIX 'touch' command
 
 # Globally accessible constants #
 
-Readonly our $VERSION => '1.1.3';
+Readonly our $VERSION => '1.1.4';
 
 Readonly my $MONITOR_MODE_ENABLED       => FALSE; # If enabled, SAMPi will not parse serial data and will simply store it
 Readonly my $STORE_DATA_ENABLED         => TRUE;  # If enabled, SAMPi will store data for analysis, in addition to parsing it 
@@ -86,7 +86,10 @@ Readonly my %PARSER_EVENTS =>
 );
 
 # Header format differs between 420 and 520 output, 420 includes date / time information
-Readonly my $HEADER_REGEX => (!$SAM4S_520) ? qr/^\d{1,2}\/\d{2}\/\d{4}/x : qr/REGISTER\sMODE/x;
+Readonly my $HEADER_REGEXP => (!$SAM4S_520) ? qr/^\d{1,2}\/\d{2}\/\d{4}/x : qr/REGISTER\sMODE/x;
+
+# As does the way discounts are represented
+Readonly my $DISCOUNT_REGEXP => (!$SAM4S_520) ? qr/^AMOUNT/ : qr/%/;
 
 # Dispatch table (array of hashes) to simplify parsing and remove the need for long if-else chains
 # Links a regex, which matches a line of data, to the action to call when a match is discovered 
@@ -94,7 +97,7 @@ Readonly my @EVENT_DISPATCH_TABLE =>
 (
     {
         parser => \&parseHeader,
-        regexp => $HEADER_REGEX, # Defined above, the header for the 420 is more verbose than the 520 output we are able to receive
+        regexp => $HEADER_REGEXP, # Defined above, the header for the 420 is more verbose than the 520 output we are able to receive
     },
     {
         parser => \&parseFooter,
@@ -148,7 +151,7 @@ Readonly my @TRANSACTION_DISPATCH_TABLE =>
     },
     {
         parser => \&adjustDiscount, # Handle discounts
-        regexp => qr/(^AMOUNT|.(%).)/x, # Begins with "AMOUNT" or includes a percentage sign that isn't at the beginning or end of a line (520), represents a discount 
+        regexp => $DISCOUNT_REGEXP, # Begins with "AMOUNT" or includes a percentage sign (520 only, 420 has multiple meanings for one), discount value for previous PLU
     }
 );
 
@@ -1112,8 +1115,8 @@ sub normaliseData
         $dataChunk =~ s/(\d{1,2}.\d{2})/$CURRENCY_SYMBOL$1/gx; # Prepend currency symbol to values
 
         # Handle the fact that cash and change values appear on one line and the parser is line-based 
-        # Detect the CASH chunk (which also contains the change
-        if (index($dataChunk, "CASH") != -1)
+        # Detect the CASH or CARD chunk (which also contains the change)
+        if (index($dataChunk, "CASH") != -1 || index($dataChunk, "CARD") != -1)
         {
             my @sale = split('(CHANGE)', $dataChunk); # Split the chunk and keep the (delimiter)
             $sale[1] = $sale[1] . $sale[2]; # Combine the contents of the latter two indices, this is the 'CHANGE' identifier and the value
