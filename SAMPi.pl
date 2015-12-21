@@ -212,7 +212,12 @@ tie %hourlyTransactionDataCopy, "Tie::IxHash";
 
 # Signals #
 
-$SIG{USR1} = sub { print $logFile Dumper (\%hourlyTransactionData); }; # Print %hourlyTransactionData to log on demand
+# Intercept USR1 for in-situ debugging
+$SIG{USR1} = sub 
+{ 
+    print $logFile Dumper (\%hourlyTransactionData); # Print %hourlyTransactionData to log on demand
+    printf $logFile "\nprevTransactionTime: %d, currentHour: %d, lastSavedHour: %d, currentEvent: %d\n\n", $prevTransactionTime, getCurrentHour(), $lastSavedHour, $currentEvent; # Print autosave vars
+}; 
 
 # Functions #
 
@@ -705,12 +710,16 @@ sub adjustChange
 {
     my ($changeValue) = @_;
 
-    if ($currentPLU =~ "CARD:") # Change should not follow a card transaction, handle cashiers hitting 'CARD' instead of 'CASH'
+    if ($currentPLU =~ "CARD:") # Change should not follow a card transaction on the 420, handle cashiers hitting 'CARD' instead of 'CASH'
     {
-        logMsg("Change detected after card transaction, correcting...");
         my $adjustedAmount = (split(':', $currentPLU, 2))[1]; # Get value of erroneous card transaction
-        $hourlyTransactionData{"Credit Cards"} -= $adjustedAmount; # Subtract value erroneously added to card total
-        $hourlyTransactionData{"Cash"} += $adjustedAmount; # Add it to cash where it should be
+
+        unless ($adjustedAmount =~ /^0/x) # Ignore if the amount is 0 (which will be the case for every card transaction on the 520)
+        {
+            logMsg("Change detected after card transaction, correcting...");
+            $hourlyTransactionData{"Credit Cards"} -= $adjustedAmount; # Subtract value erroneously added to card total
+            $hourlyTransactionData{"Cash"} += $adjustedAmount; # Add it to cash where it should be
+        }
     }
 
     if ($SAM4S_520)
