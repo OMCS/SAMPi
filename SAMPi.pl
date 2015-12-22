@@ -216,7 +216,7 @@ tie %hourlyTransactionDataCopy, "Tie::IxHash";
 $SIG{USR1} = sub 
 { 
     print $logFile Dumper (\%hourlyTransactionData); # Print %hourlyTransactionData to log on demand
-    printf $logFile "\nprevTransactionTime: %d, currentHour: %d, lastSavedHour: %d, currentEvent: %d\n\n", $prevTransactionTime, getCurrentHour(), $lastSavedHour, $currentEvent; # Print autosave vars
+    printf $logFile "\nprevTransactionTime: %d, currentEvent Hour: %d, lastSavedHour: %d, currentEvent: %d\n\n", $prevTransactionTime, $currentEventHour, $lastSavedHour, $currentEvent; # Print autosave vars
 }; 
 
 # Functions #
