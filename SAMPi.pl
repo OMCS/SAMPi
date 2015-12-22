@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 #
-# SAMPi - SAM4S (400, 500) ECR data reader, parser and logger (Last Modified 21/12/2015)
+# SAMPi - SAM4S (400, 500) ECR data reader, parser and logger (Last Modified 22/12/2015)
 #
 # This software runs in the background on a suitably configured Raspberry Pi,
 # reads from a connected SAM4S ECR via serial connection, extracts various data,
@@ -714,9 +714,9 @@ sub adjustChange
     {
         my $adjustedAmount = (split(':', $currentPLU, 2))[1]; # Get value of erroneous card transaction
 
-        unless ($adjustedAmount =~ /^0/x) # Ignore if the amount is 0 (which will be the case for every card transaction on the 520)
+        unless ($adjustedAmount =~ /0:00/x) # Ignore if the amount is 0 (which will be the case for every card transaction on the 520)
         {
-            logMsg("Change detected after card transaction, correcting...");
+            logMsg("Change of $adjustedAmount detected after card transaction, correcting...");
             $hourlyTransactionData{"Credit Cards"} -= $adjustedAmount; # Subtract value erroneously added to card total
             $hourlyTransactionData{"Cash"} += $adjustedAmount; # Add it to cash where it should be
         }
