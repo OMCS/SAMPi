@@ -590,7 +590,6 @@ sub parseHeader
     {
         my (undef, $currentMinute, $currentHour) = localtime();
         $currentEventTime = sprintf("%02d:%02d", $currentHour, $currentMinute);
-        $ignoreHeaders = TRUE; # Ignore erroneous header messages
     }
 
     # Otherwise we are not inside a valid header line
@@ -634,7 +633,7 @@ sub parseHeader
     
     if ($SAM4S_520)
     {
-        $ignoreHeaders = TRUE; # Ignore subsequent 'headers' until we reach the end of a transaction
+        $ignoreHeaders = TRUE; # Ignore erroneous 'headers' until we reach the end of a transaction
     }
 
     return;
@@ -775,6 +774,7 @@ sub parseTransaction
         index($transactionLine, $CURRENCY_SYMBOL) == -1) 
     {
             return unless ($transactionLine =~ /^AMOUNT/x); # Discount values do not have a currency symbol
+            logMsg("Returning from parseTransaction()");
             $transactionLine =~ s/-/$CURRENCY_SYMBOL-/gx; # Add the currency symbol so the line works with the parser
     }
     
