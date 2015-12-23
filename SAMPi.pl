@@ -958,7 +958,7 @@ sub loadState
     return;
 }
 
-# This function is called when SAMPi is operating in monitor (non-parsing) mode
+# This function is called when SAMPi is monitoring or if serial logging is enabled
 # It will save the given line of serial data to a serial log file for later use
 ## no critic qw(RequireBriefOpen)
 sub storeLine
@@ -981,7 +981,15 @@ sub storeLine
         $dataOpen = TRUE;
     }
 
-    print $serialLog $dataChunk;
+    if ($SAM4S_520)
+    {
+        printf $serialLog "%s: %s", localtime(), $dataChunk;
+    }
+
+    else
+    {
+        print $serialLog $dataChunk;
+    }
 
     return;
 }
