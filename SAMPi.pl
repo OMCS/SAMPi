@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 #
-# SAMPi - SAM4S (400, 500) ECR data reader, parser and logger (Last Modified 22/12/2015)
+# SAMPi - SAM4S (400, 500) ECR data reader, parser and logger (Last Modified 23/12/2015)
 #
 # This software runs in the background on a suitably configured Raspberry Pi,
 # reads from a connected SAM4S ECR via serial connection, extracts various data,
@@ -216,7 +216,7 @@ tie %hourlyTransactionDataCopy, "Tie::IxHash";
 $SIG{USR1} = sub 
 { 
     print $logFile Dumper (\%hourlyTransactionData); # Print %hourlyTransactionData to log on demand
-    printf $logFile "\nprevTransactionTime: %d, currentEvent Hour: %d, lastSavedHour: %d, currentEvent: %d\n\n", $prevTransactionTime, $currentEventHour, $lastSavedHour, $currentEvent; # Print autosave vars
+    printf $logFile "\nprevTransactionTime: %d, currentEventHour: %d, lastSavedHour: %d, currentEvent: %d\n\n", $prevTransactionTime, $currentEventHour, $lastSavedHour, $currentEvent; # Print autosave vars
 }; 
 
 # Functions #
@@ -580,7 +580,7 @@ sub parseHeader
     $prevTransactionTime = time(); # Set the time of the previous transaction in UNIX format
 
     # Check for a time in the header variable, if so we are connected to a 420
-    if ($headerLine =~ /([0-9][0-9]:[0-9][0-9])/)
+    if ($headerLine =~ /([0-9][0-9]:[0-9][0-9])/ && !$SAM4S_520)
     {
         $currentEventTime = $1; 
     }
@@ -590,6 +590,7 @@ sub parseHeader
     {
         my (undef, $currentMinute, $currentHour) = localtime();
         $currentEventTime = sprintf("%02d:%02d", $currentHour, $currentMinute);
+        logMsg("520 DEBUG: CurrentEventTime is $currentEventTime");
     }
 
     # Otherwise we are not inside a valid header line
