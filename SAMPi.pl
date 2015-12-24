@@ -752,7 +752,7 @@ sub adjustCardTotal
 {
     my ($cardTotal) = @_;
     adjustTotal($cardTotal, "Credit Cards");
-    $currentPLU = "CARD:$cardTotal"; # Record value if hit accidentally
+    $currentPLU = "CARD:$cardTotal"; # Record value if further processing is required
     return;
 }
 
@@ -812,7 +812,7 @@ sub parseTransaction
     $transactionKey =~ s/(\w+)/\u\L$1/gx; # Normalise PLU case to "Title Case"
 
     # Ensure the PLU matches one of the valid PLU names
-    if (exists($PLUList{$transactionKey}))
+    if (exists($PLUList{$transactionKey}) && $transactionKey !~ /SUBTOTAL/)
     {
         if ($transactionValue < $SINGLE_ITEM_LIMIT)
         {
