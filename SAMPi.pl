@@ -984,7 +984,7 @@ sub storeLine
 
     if ($SAM4S_520)
     {
-        printf $serialLog "%s: %s\n", scalar localtime(), $dataChunk;
+        printf $serialLog "%s: %s", scalar localtime(), $dataChunk;
     }
 
     else
