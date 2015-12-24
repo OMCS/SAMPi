@@ -557,6 +557,7 @@ sub parseHeader
     # Ignore headers if we are on a 520 and in the middle of a transaction
     if ($SAM4S_520 && $ignoreHeaders)
     {
+        logMsg("Ignore headers enabled");
         return;
     }
 
