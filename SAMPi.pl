@@ -950,7 +950,7 @@ sub loadState
     $previousEventInvalid = TRUE;
     %hourlyTransactionData = %hourlyTransactionDataCopy;
 
-    unless ($currentEvent == $PARSER_EVENTS{FOOTER}) # XXX: This may not be required
+    unless ($currentEvent == $PARSER_EVENTS{FOOTER} || $SAM4S_520) # XXX: This may not be required
     {
         $currentEvent = $PARSER_EVENTS{OTHER};
     }
