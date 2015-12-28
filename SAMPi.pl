@@ -522,10 +522,16 @@ sub saveData
         # Set the last transaction time
         $hourlyTransactionData{"Last Transaction"} = $previousEventTime;
 
-        # Fix disparities between the total takings and the cash total
+        # Correct any disparities between the total takings and the cash total
         if ($hourlyTransactionData{"Credit Cards"} == 0)
         {
             $hourlyTransactionData{"Total Takings"} = $hourlyTransactionData{"Cash"};
+        }
+
+        # Correct any issues with the overall total, this primarily affects the 520
+        if ($hourlyTransactionData{"Total Takings"} > ($hourlyTransactionData{"Cash"} + $hourlyTransactionData{"Credit Cards"}))
+        {
+            $hourlyTransactionData{"Total Takings"} = $hourlyTransactionData{"Cash"} + $hourlyTransactionData{"Credit Cards"};
         }
 
         # Write the collected data to the CSV file and clear the data structure
