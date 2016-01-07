@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 #
-# SAMPi - SAM4S (400, 500) ECR data reader, parser and logger (Last Modified 28/12/2015)
+# SAMPi - SAM4S (400, 500) ECR data reader, parser and logger (Last Modified 07/01/2016)
 #
 # This software runs in the background on a suitably configured Raspberry Pi,
 # reads from a connected SAM4S ECR via serial connection, extracts various data,
@@ -51,7 +51,7 @@ use File::Touch; # Perl implementation of the UNIX 'touch' command
 
 # Globally accessible constants #
 
-Readonly our $VERSION => '1.1.5';
+Readonly our $VERSION => '1.1.6';
 
 Readonly my $MONITOR_MODE_ENABLED       => FALSE; # If enabled, SAMPi will not parse serial data and will simply store it
 Readonly my $STORE_DATA_ENABLED         => TRUE;  # If enabled, SAMPi will store data for analysis, in addition to parsing it 
@@ -230,7 +230,7 @@ sub getCurrentDate
     my $currentMonth = $timestamp[4] + 1; # Months from localtime() are zero-indexed
     my $currentDay   = $timestamp[3];
 
-    my @currentDate = ($currentYear, $currentMonth, sprintf("%02d", $currentDay)); # Pad day
+    my @currentDate = ($currentYear, sprintf("%02d", $currentMonth), sprintf("%02d", $currentDay)); # Pad day and month
 
     return @currentDate;
 }
