@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 #
-# SAMPi - SAM4S (400, 500) ECR data reader, parser and logger (Last Modified 07/01/2016)
+# SAMPi - SAM4S (400, 500) ECR data reader, parser and logger (Last Modified 31/01/2016)
 #
 # This software runs in the background on a suitably configured Raspberry Pi,
 # reads from a connected SAM4S ECR via serial connection, extracts various data,
@@ -51,7 +51,7 @@ use File::Touch; # Perl implementation of the UNIX 'touch' command
 
 # Globally accessible constants #
 
-Readonly our $VERSION => '1.1.6';
+Readonly our $VERSION => '1.1.7';
 
 Readonly my $MONITOR_MODE_ENABLED       => FALSE; # If enabled, SAMPi will not parse serial data and will simply store it
 Readonly my $STORE_DATA_ENABLED         => TRUE;  # If enabled, SAMPi will store data for analysis, in addition to parsing it 
@@ -366,8 +366,7 @@ sub isBusinessHours
             }
 
             logMsg("Entering Idle Mode");
-            clearData(); # Clear the stored data
-            unlink <hourlyData*>;  # Remove any stray hourly data 
+            clearData(); # Clear the stored data, reset flags and empty temporary data structures
     
             # Clear log file if it has become too large (over 10MB)
             if ( ( (-s $logFile) / (1024 * 1024) ) > 10 )
@@ -1029,6 +1028,15 @@ sub clearData
         {
             # Reset other values
             $hourlyTransactionData{$key} = "0";
+        }
+    }
+
+    # Clear the 520 data buffer, if applicable
+    if ($SAM4S_520)
+    {
+        if (@dataBuffer)
+        {
+            @dataBuffer = ();
         }
     }
 
