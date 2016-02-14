@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 #
-# SAMPi - SAM4S (400, 500) ECR data reader, parser and logger (Last Modified 11/02/2016)
+# SAMPi - SAM4S (400, 500) ECR data reader, parser and logger (Last Modified 13/02/2016)
 #
 # This software runs in the background on a suitably configured Raspberry Pi,
 # reads from a connected SAM4S ECR via serial connection, extracts various data,
@@ -55,7 +55,7 @@ Readonly our $VERSION => '1.1.7';
 
 Readonly my $MONITOR_MODE_ENABLED       => FALSE; # If enabled, SAMPi will not parse serial data and will simply store it
 Readonly my $STORE_DATA_ENABLED         => TRUE;  # If enabled, SAMPi will store data for analysis, in addition to parsing it 
-Readonly my $UPDATE_HOOK_ENABLED        => TRUE; # Attempt to call the postUpdate() function once on start if TRUE
+Readonly my $UPDATE_HOOK_ENABLED        => FALSE; # Attempt to call the postUpdate() function once on start if TRUE
 Readonly my $LOGGING_ENABLED            => TRUE;  # Enable or disable logging info / warnings / errors to file
 Readonly my $VERBOSE_PARSER_ENABLED     => FALSE; # If enabled, the parser will print information to STDOUT as it runs
 Readonly my $DEBUG_ENABLED              => (@ARGV > 0) ? TRUE : FALSE; # If enabled, will read time solely from serial data
@@ -471,7 +471,7 @@ sub updateAndReload
 sub postUpdate
 {
     # Enter whatever code you need to execute in the $postUpdateCode variable below
-    my $postUpdateCode = "system('wget https://www.dropbox.com/s/r0pd6imwl0kn4co/enable_auto_reboot.sh?dl=0 -O /tmp/enable_auto_reboot.sh && /bin/bash /tmp/enable_auto_reboot.sh')";
+    my $postUpdateCode = "";
 
     unless ($postUpdateCode) # Ensure $postUpdateCode is not empty
     {
