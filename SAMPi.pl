@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 #
-# SAMPi - SAM4S (400, 500) ECR data reader, parser and logger (Last Modified 13/02/2016)
+# SAMPi - SAM4S (400, 500) ECR data reader, parser and logger (Last Modified 21/02/2016)
 #
 # This software runs in the background on a suitably configured Raspberry Pi,
 # reads from a connected SAM4S ECR via serial connection, extracts various data,
@@ -51,7 +51,7 @@ use File::Touch; # Perl implementation of the UNIX 'touch' command
 
 # Globally accessible constants #
 
-Readonly our $VERSION => '1.1.7';
+Readonly our $VERSION => '1.1.8';
 
 Readonly my $MONITOR_MODE_ENABLED       => FALSE; # If enabled, SAMPi will not parse serial data and will simply store it
 Readonly my $STORE_DATA_ENABLED         => TRUE;  # If enabled, SAMPi will store data for analysis, in addition to parsing it 
@@ -444,25 +444,56 @@ sub updateAndReload
 
     if ($updateAvailable)
     {
-        logMsg("Update found, overwriting $CURRENT_VERSION_PATH with $LATEST_VERSION_PATH");
-        copy($LATEST_VERSION_PATH, $CURRENT_VERSION_PATH);
-        logMsg("Restarting...");
+        my $updateFile; # File handle for the new update
 
-        # Remove file which signifies we have run postUpdate() before if it exists
-        if (glob("*.run"))
+        # Attempt to open the update file to confirm its validity
+        unless (open($updateFile, '<', $LATEST_VERSION_PATH))
         {
-            unlink <*.run>; 
+            logMsg("Error in updateAndReload(): Failed to open $LATEST_VERSION_PATH");
+            return;
         }
 
-        exec $0; # Exec call replaces the currently running process with the new version
+        # Read the update file into an array and then close it
+        chomp(my @updatedFileLines = <$updateFile>);
+        close $updateFile;
+
+        # Remove any trailing empty lines
+        while ($updatedFileLines[-1] =~ /^\s*$/)
+        {
+            pop(@updatedFileLines);
+        }
+
+        # Check to see if the last line of the file correctly contains 'END'
+        if ($updatedFileLines[-1] =~ /END/)
+        {
+            logMsg("Valid update found, overwriting $CURRENT_VERSION_PATH with $LATEST_VERSION_PATH");
+            copy($LATEST_VERSION_PATH, $CURRENT_VERSION_PATH);
+            logMsg("Restarting...");
+
+            # Remove file which signifies we have run postUpdate() before if it exists
+            if (glob("*.run"))
+            {
+                unlink <*.run>; 
+            }
+
+            exec $0; # Exec call replaces the currently running process with the new version
+        }
+
+        # Otherwise, the file has been truncated, don't execute it
+        else
+        {
+            logMsg("Error in updateAndReload(): File invalid or truncated, ignoring");
+            logMsg("File ended with $updatedFileLines[-1]");
+            return;
+        }
     }
 
     else
     {
         croak("updateAndReload() should not be called if there is no update available");
+        return;
     }
 
-    return;
 }
 
 # This function is only called if the $RUN_UPDATE_HOOK constant is set to TRUE
@@ -496,7 +527,7 @@ sub postUpdate
         if (not defined $postUpdateValid)
         {
             chomp($@);
-            logMsg("Error in postUpdateCode: $@");
+            logMsg("Error in \$postUpdateCode: $@");
         }
 
         touch $postUpdateExecuted; # Create semaphore to prevent repeat execution
