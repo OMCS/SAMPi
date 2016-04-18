@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 #
-# SAMPi - SAM4S (400, 500) ECR data reader, parser and logger (Last Modified 21/02/2016)
+# SAMPi - SAM4S (400, 500) ECR data reader, parser and logger (Last Modified 17/04/2016)
 #
 # This software runs in the background on a suitably configured Raspberry Pi,
 # reads from a connected SAM4S ECR via serial connection, extracts various data,
@@ -161,10 +161,13 @@ Readonly my @TRANSACTION_DISPATCH_TABLE =>
 # File I/O & Flags
 my $csvFile; # CSV file descriptor, used for output from SAMPi
 my $csvOpen = FALSE; # Flag which determines whether a csv output file is currently open
+my $outputFilePath; # Full path to output CSV file
 my $serialLog; # Serial log descriptor (monitor mode only)
 my $dataOpen = FALSE; # Determines if serial log file has been opened (if data logging is enabled)
 my $dataLogFilePath; # File path for logged serial data, cleared daily when SAMPi goes into idle mode
 my $logFile; # File descriptor for the SAMPi system log file
+my $ZReportLogFile; # File descriptor for the Z Report log file
+my $ZReportLogOpen = FALSE; # Determines if the Z Report log file has been opened
 
 # Parser State
 my $previousEvent = $PARSER_EVENTS{OTHER}; # Track the previous event, used for counting transactions
@@ -176,6 +179,7 @@ my $lastSavedHour = "0"; # Store the hour we last saved when reading time from t
 my $currentPLU; # Store the current PLU, used when applying discounts 
 my $previousEventInvalid = FALSE; # Flag which prevents reprints and cancellations from being counted as the first / last event
 my $prevTransactionTime = 0; # Stores time of most recently read transaction, checked in order to save at the end of the day
+my $captureZReport = FALSE; # Flag which captures the latest Z-Report information in a separate file for later use
 
 # 500 Series Variables
 my @dataBuffer; # Buffer for stored serial data, required for 520 parsing
@@ -361,8 +365,14 @@ sub isBusinessHours
             if (defined $serialLog)
             {
                 close $serialLog;
-                unlink $dataLogFilePath;
+                unlink $dataLogFilePath; # Remove the log file so we don't fill up the internal storage
                 $dataOpen = FALSE;
+            }
+
+            if (defined $ZReportLogFile)
+            {
+                close $ZReportLogFile;
+                $ZReportLogOpen = FALSE;
             }
 
             logMsg("Entering Idle Mode");
@@ -605,6 +615,12 @@ sub parseHeader
         return;
     }
 
+    # Disable Z report capture flag if we are done capturing the previous event
+    if ($captureZReport)
+    {
+        $captureZReport = FALSE;
+    }
+
     # Make a copy of the current transaction data so we can revert if required
     saveState();
 
@@ -714,6 +730,18 @@ sub parseReport
     }
 
     $currentEvent = $PARSER_EVENTS{OTHER};
+
+    my ($reportLine) = @_;
+
+    # If we are about to read a Z-Report
+    if ($reportLine =~ /Z\s 1/)
+    {
+        # Set the capture flag to true so that the Z Report text is captured in a separate file
+        $captureZReport = TRUE;
+
+        # Overwrite any existing data
+    }
+
     return;
 }
 
@@ -1008,10 +1036,11 @@ sub loadState
 ## no critic qw(RequireBriefOpen)
 sub storeLine
 {
-    my ($dataChunk) = @_;
+    my ($dataChunk, $storeZReport) = @_;
 
-    my @date = getCurrentDate();
-    $dataLogFilePath = $ENV{'HOME'} . $DIRECTORY_SEPARATOR . "serial_log_" . $date[2] . ".dat"; 
+    my @currentDate = getCurrentDate();
+
+    $dataLogFilePath = $ENV{'HOME'} . $DIRECTORY_SEPARATOR . "serial_log_" . $currentDate[2] . ".dat"; 
 
     unless ($dataOpen)
     {
@@ -1026,6 +1055,30 @@ sub storeLine
         $dataOpen = TRUE;
     }
 
+     # If we are storing Z Report data separately we need to open a file for that too
+    if (defined $storeZReport)
+    {
+        # Open the file to write the Z report if it's not already open 
+        unless ($ZReportLogOpen)
+        {
+            # The naming convention will be the same as CSV output files except the extension will be .zr
+            # instead of .csv
+            my $ZReportLogFilePath;
+            ($ZReportLogFilePath = $outputFilePath) =~ s/\.csv/\.zr/;
+
+            # Open the Z Report log in write mode (overwrite any existing data)
+            unless (open ($ZReportLogFile, '>', $ZReportLogFilePath))
+            {
+                logMsg("Error opening Z Report log file at $ZReportLogFilePath");
+            }
+
+            logMsg("Opened Z Report log file at $ZReportLogFilePath");
+            $ZReportLogFile->autoflush(1);
+            $ZReportLogOpen = TRUE;
+        }
+    }
+
+    # Provide a timestamp for 520 logs as this is not included in the raw output
     if ($SAM4S_520)
     {
         printf $serialLog "%s: %s", scalar localtime(), $dataChunk;
@@ -1034,6 +1087,7 @@ sub storeLine
     else
     {
         print $serialLog $dataChunk;
+        print $ZReportLogFile $dataChunk if $ZReportLogOpen;
     }
 
     return;
@@ -1286,7 +1340,7 @@ sub getOutputFileName
 sub initialiseOutputFile
 {
     my @csvHeadings; # Array of CSV headings
-    my $outputFilePath = getOutputFileName(); 
+    $outputFilePath = getOutputFileName(); 
     my $pluFile; # PLU filehandle
 
     # If the file does not exist, create it and add the correct headings
@@ -1457,6 +1511,13 @@ sub processData
                 if (@dataBuffer)
                 {
                     parseChunk(shift @dataBuffer); # Parse whatever is in the data buffer
+                }
+
+                # If we are capturing the Z-Report we need to store the chunk in a separate file for later processing
+                if ($captureZReport)
+                {
+                    # We use the existing storeLine() function but provide a different file handle
+                    storeLine("$serialDataChunk\n", TRUE);
                 }
 
                 # Parse the most recently received chunk of data
