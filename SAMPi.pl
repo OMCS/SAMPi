@@ -734,9 +734,10 @@ sub parseReport
     my ($reportLine) = @_;
 
     # If we are about to read a Z-Report
-    if ($reportLine =~ /Z\s 1/)
+    if ($reportLine =~ /Z\s1/)
     {
         # Set the capture flag to true so that the Z Report text is captured in a separate file
+        logMsg("Capturing Z Report at $currentEventTime");
         $captureZReport = TRUE;
 
         # Overwrite any existing data
