@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 #
-# SAMPi - SAM4S (400, 500) ECR data reader, parser and logger (Last Modified 17/04/2016)
+# SAMPi - SAM4S (400, 500) ECR data reader, parser and logger (Last Modified 20/04/2016)
 #
 # This software runs in the background on a suitably configured Raspberry Pi,
 # reads from a connected SAM4S ECR via serial connection, extracts various data,
@@ -51,15 +51,16 @@ use File::Touch; # Perl implementation of the UNIX 'touch' command
 
 # Globally accessible constants #
 
-Readonly our $VERSION => '1.2.0';
+Readonly our $VERSION => '1.2.1';
 
 Readonly my $MONITOR_MODE_ENABLED       => FALSE; # If enabled, SAMPi will not parse serial data and will simply store it
 Readonly my $STORE_DATA_ENABLED         => TRUE;  # If enabled, SAMPi will store data for analysis, in addition to parsing it 
+Readonly my $AUTO_UPDATE_ENABLED        => TRUE; #  If enabled, SAMPi will check for updates. This can be disabled when debugging
 Readonly my $UPDATE_HOOK_ENABLED        => FALSE; # Attempt to call the postUpdate() function once on start if TRUE
 Readonly my $LOGGING_ENABLED            => TRUE;  # Enable or disable logging info / warnings / errors to file
 Readonly my $VERBOSE_PARSER_ENABLED     => FALSE; # If enabled, the parser will print information to STDOUT as it runs
 Readonly my $DEBUG_ENABLED              => (@ARGV > 0) ? TRUE : FALSE; # If enabled, will read time solely from serial data
-Readonly my $SAM4S_520                  => (-e "./config/520") ? TRUE : FALSE; # Use 520 specific code where necessary
+Readonly my $SAM4S_520                  => (-e "./config/520") ? TRUE : FALSE; # Use 520 specific code where necessary if the file exists
 
 Readonly my $DIRECTORY_SEPARATOR        => ($^O =~ /^Win/ix) ? "\\" : "/"; # Ternary operator used for brevity, included for future W32 compatability
 Readonly my $CURRENT_VERSION_PATH       => abs_path($0);
@@ -399,7 +400,13 @@ sub isBusinessHours
 # Updates will be checked for at startup and during idle mode
 sub checkForUpdate
 {
-   # Check if the current script and latest script on the server differ
+    # Return if updates have been disabled
+    if (!$AUTO_UPDATE_ENABLED)
+    {
+        return;
+    }
+
+    # Check if the current script and latest script on the server differ
     my $updateAvailable = isUpdateAvailable();
 
     if ($updateAvailable)
@@ -1057,7 +1064,7 @@ sub storeLine
     }
 
      # If we are storing Z Report data separately we need to open a file for that too
-    if (defined $storeZReport)
+    if (defined $storeZReport && $captureZReport)
     {
         # Open the file to write the Z report if it's not already open 
         unless ($ZReportLogOpen)
@@ -1076,7 +1083,12 @@ sub storeLine
             logMsg("Opened Z Report log file at $ZReportLogFilePath");
             $ZReportLogFile->autoflush(1);
             $ZReportLogOpen = TRUE;
+
+            # Write the time at the top of the file
+            print $ZReportLogFile  "%s\n", scalar localtime();
         }
+
+        print $ZReportLogFile $dataChunk if $ZReportLogOpen;
     }
 
     # Provide a timestamp for 520 logs as this is not included in the raw output
@@ -1088,7 +1100,6 @@ sub storeLine
     else
     {
         print $serialLog $dataChunk;
-        print $ZReportLogFile $dataChunk if $ZReportLogOpen;
     }
 
     return;
@@ -1498,27 +1509,27 @@ sub processData
                 if ($MONITOR_MODE_ENABLED)
                 {
                     # Save the raw data to the log file
-                    storeLine("$serialDataChunk\n");
+                    storeLine("$serialDataChunk\n", undef);
                     next; # Do not parse the data
                 }
 
                 # Store the data if data logging is enabled
                 if ($STORE_DATA_ENABLED)
                 {
-                    storeLine("$serialDataChunk\n");
+                    storeLine("$serialDataChunk\n", undef);
+                }  
+                
+                # If we are capturing the Z-Report we need to store the chunk in a separate file for later processing
+                if ($captureZReport)
+                {
+                    # We use the existing storeLine() function but provide a different file handle
+                    storeLine("$serialDataChunk\n", TRUE);
                 }
 
                 # Sometimes data needs to be stored in a buffer for later processing (the 520 requires this to process cash and change)
                 if (@dataBuffer)
                 {
                     parseChunk(shift @dataBuffer); # Parse whatever is in the data buffer
-                }
-
-                # If we are capturing the Z-Report we need to store the chunk in a separate file for later processing
-                if ($captureZReport)
-                {
-                    # We use the existing storeLine() function but provide a different file handle
-                    storeLine("$serialDataChunk\n", TRUE);
                 }
 
                 # Parse the most recently received chunk of data
