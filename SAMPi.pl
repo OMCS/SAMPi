@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 #
-# SAMPi - SAM4S (400, 500) ECR data reader, parser and logger (Last Modified 20/04/2016)
+# SAMPi - SAM4S (400, 500) ECR data reader, parser and logger (Last Modified 21/04/2016)
 #
 # This software runs in the background on a suitably configured Raspberry Pi,
 # reads from a connected SAM4S ECR via serial connection, extracts various data,
@@ -51,7 +51,7 @@ use File::Touch; # Perl implementation of the UNIX 'touch' command
 
 # Globally accessible constants #
 
-Readonly our $VERSION => '1.2.1';
+Readonly our $VERSION => '1.2.2';
 
 Readonly my $MONITOR_MODE_ENABLED       => FALSE; # If enabled, SAMPi will not parse serial data and will simply store it
 Readonly my $STORE_DATA_ENABLED         => TRUE;  # If enabled, SAMPi will store data for analysis, in addition to parsing it 
@@ -726,9 +726,10 @@ sub parseFooter
     return;
 }
 
-# This function is called when a report header is matched in the incoming data. It does not currently do anything
-# As reports are ignored in the current implementation in favour of manually calculating totals
-# In the future this function could be used to read specific data from reports and act on it
+# This function is called when a report header is matched in the incoming data.
+# It will capture ZReports so that they can be uploaded separately for recording
+# Z-Report totals may differ from calculated totals due to variations in the internal
+# calculation algorithms in the SAM4S.
 sub parseReport
 {
     if ($VERBOSE_PARSER_ENABLED)
@@ -745,9 +746,9 @@ sub parseReport
     {
         # Set the capture flag to true so that the Z Report text is captured in a separate file
         logMsg("Capturing Z Report at $currentEventTime");
-        $captureZReport = TRUE;
+        $captureZReport = TRUE; # Set flag to start capturing Z-Report
 
-        # Overwrite any existing data
+        storeLine("$reportLine\n", TRUE); # Store the report descriptor / heading in the Z report capture file
     }
 
     return;
@@ -1085,7 +1086,7 @@ sub storeLine
             $ZReportLogOpen = TRUE;
 
             # Write the time at the top of the file
-            print $ZReportLogFile  "%s\n", scalar localtime();
+            printf $ZReportLogFile  "%s\n", scalar localtime();
         }
 
         print $ZReportLogFile $dataChunk if $ZReportLogOpen;
@@ -1523,6 +1524,7 @@ sub processData
                 if ($captureZReport)
                 {
                     # We use the existing storeLine() function but provide a different file handle
+                    $serialDataChunk =~ s/\x{9c}/$CURRENCY_SYMBOL/gx; # Replace unicode character with currency symbol
                     storeLine("$serialDataChunk\n", TRUE);
                 }
 
